@@ -288,15 +288,19 @@ def to_yahoo(sym):
 
 
 def _yahoo_token(sym):
-    y = to_yahoo(sym)
+    y = markets.data_symbol(to_yahoo(sym))
     if "=" in y or "&" in y or "^" in y:
         return markets.yahoo_query_symbol(y)
     return y
 
 
 def spark_path(symbols, rng, interval, prepost=False):
-    q = "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (
-        ",".join(_yahoo_token(s) for s in symbols), rng, interval)
+    tokens = []
+    for s in symbols:
+        t = _yahoo_token(s)
+        if t not in tokens:
+            tokens.append(t)
+    q = "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (",".join(tokens), rng, interval)
     if prepost:
         q += "&includePrePost=true"
     return q
@@ -837,12 +841,19 @@ def fetch_spark(symbols, rng, interval, pause, a=None, prepost=False):
         if k and pause:
             SLEEP(pause)
         wanted = {to_yahoo(s): s for s in batch}
+        proxied = {s: markets.data_symbol(to_yahoo(s)) for s in batch
+                   if markets.data_symbol(to_yahoo(s)) != to_yahoo(s)}
+        for s, y in proxied.items():
+            wanted.setdefault(y, y)
         try:
             got = parse_spark(yahoo_get(spark_path(batch, rng, interval, prepost)), wanted)
         except (ScanError, ValueError) as e:
             for s in batch:
                 failed[s] = str(e)
             continue
+        for s, y in proxied.items():
+            if y in got:
+                got[s] = got[y]
         for s in batch:
             if s in got:
                 data[s] = got[s]
@@ -1102,6 +1113,8 @@ def cmd_daily(a):
     for h in hits[:a.show]:
         prof = markets.classify(h["symbol"])
         tags = ", ".join(LABEL[t] for t in h["setups"])
+        if prof.get("spot"):
+            tags += " (%s future price)" % prof["yahoo"]
         if prof["market"] == "equity":
             print("  %-6s %10s  RSI %5.1f  %s" % (h["symbol"], money(h["price"]), h["rsi"], tags))
         else:

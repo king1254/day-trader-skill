@@ -419,7 +419,8 @@ def load_chart(sym, interval, day, offline=None):
     if prof["market"] != "equity":
         sym = prof["symbol"]
     ysym = sym.upper().replace(".", "-")
-    yurl = markets.yahoo_query_symbol(ysym) if ("=" in ysym or "&" in ysym) else ysym
+    dsym = markets.data_symbol(ysym)
+    yurl = markets.yahoo_query_symbol(dsym) if ("=" in dsym or "&" in dsym) else dsym
     if offline:
         path = offline
         if os.path.isdir(offline):
@@ -449,7 +450,7 @@ def load_chart(sym, interval, day, offline=None):
         raise PlanError("Yahoo has no data for %s: %s" % (sym, err.get("description") or "unknown ticker"))
     r = res[0] or {}
     meta = r.get("meta") or {}
-    if str(meta.get("symbol") or ysym).upper() != ysym:
+    if str(meta.get("symbol") or ysym).upper() not in (ysym, dsym):
         raise PlanError("the chart file holds %s, not %s" % (meta.get("symbol"), sym))
     q = ((r.get("indicators") or {}).get("quote") or [{}])[0] or {}
 
@@ -665,6 +666,8 @@ def build_plan(a, now_utc):
         plan["atr"] = round(atr, 4)
         plan["atr_bars"] = atr_n
     warnings = []
+    if prof.get("data_note") and not a.offline:
+        warnings.append(prof["data_note"] + ".")
     if flat_note:
         warnings.append("Flat-by %s: %s." % (flat_by, flat_note))
     mrr = cfg.get("min_reward_risk")

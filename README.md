@@ -176,11 +176,13 @@ and the scan stays on US stocks.
 | --- | --- | --- | --- |
 | `EURUSD`, `EUR/USD` | forex | `EURUSD=X` | micro lots of 1,000 base units |
 | `USDJPY` | forex | `USDJPY=X` | micro lots, 3 decimals |
-| `GOLD`, `XAUUSD` | spot metal | `XAUUSD=X` | ounces |
+| `GOLD`, `XAUUSD` | spot metal | `XAUUSD=X`, priced from `GC=F` | ounces |
 | `OIL`, `WTI` | energy future | `CL=F` | contracts |
 | `CL` | US stock | `CL` | shares (Colgate) |
 | `NG` | US stock | `NG` | shares (NovaGold) |
 | `NATGAS` | energy future | `NG=F` | contracts |
+
+Yahoo has no spot metal quotes, so spot gold, silver, platinum and palladium are priced from their front-month future (`GC=F`, `SI=F`, `PL=F`, `PA=F`), which usually trades a few dollars above spot. They are still sized in ounces, and the tools say when a price came from the future.
 
 `CL`, `NG`, `GC`, `SI`, and the other short tickers stay the listed stock.
 Futures need the Yahoo form (`CL=F`) or an alias (`OIL`, `GOLD`, `NATGAS`).

@@ -202,7 +202,7 @@ def clock24(minutes):
 # ---------------------------------------------------------------- data
 
 def chart_url(sym, host="query2"):
-    y = sym.upper().replace(".", "-")
+    y = markets.data_symbol(sym.upper().replace(".", "-"))
     if any(c in y for c in "=&"):
         return "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=60d&interval=5m&includePrePost=true" % (
             host, urllib.parse.quote(y, safe=""))

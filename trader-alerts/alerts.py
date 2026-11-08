@@ -213,7 +213,7 @@ def stooq_url(sym):
     prof = markets.classify(sym)
     if prof["market"] == "equity":
         return "https://stooq.com/q/l/?s=%s.us&f=sd2t2ohlcv&h&e=csv" % sym.lower().replace(".", "-")
-    y = prof["yahoo"].lower()
+    y = prof["symbol"].lower()
     if y.endswith("=x"):
         token = y[:-2]
     elif y.endswith("=f"):

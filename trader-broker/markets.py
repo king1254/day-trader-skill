@@ -140,6 +140,10 @@ SPOT_METALS = {
     "XPDUSD=X": ("Palladium spot", 2, 0.01),
 }
 
+# Yahoo has no spot metal quotes (XAUUSD=X answers 404), so a spot metal is
+# priced from its front-month COMEX/NYMEX future. The future runs a little above spot.
+SPOT_PROXY = {"XAUUSD=X": "GC=F", "XAGUSD=X": "SI=F", "XPTUSD=X": "PL=F", "XPDUSD=X": "PA=F"}
+
 FOREX_PAIRS = [
     ("EURUSD", "Euro / US Dollar"),
     ("GBPUSD", "British Pound / US Dollar"),
@@ -245,10 +249,12 @@ def _forex(pair, name, session):
 def _spot(yahoo, session):
     name, decimals, tick = SPOT_METALS[yahoo]
     profile = {
-        "market": "commodity", "symbol": yahoo, "yahoo": yahoo, "name": name,
+        "market": "commodity", "symbol": yahoo, "yahoo": SPOT_PROXY[yahoo], "name": name,
         "unit": "ounce", "unit_size": 1, "decimals": decimals, "tick": tick,
         "point_value": 1.0, "base": yahoo[:3], "quote": "USD", "spot": True,
         "holidays": "none", "group": "spot",
+        "data_note": "%s prices come from the %s future (Yahoo has no spot quote); it runs a little above spot"
+                     % (yahoo[:6], SPOT_PROXY[yahoo]),
     }
     return _apply_fx_session(profile, session)
 
@@ -461,6 +467,12 @@ def unit_word(profile, n):
     return word + "s"
 
 
+def data_symbol(symbol):
+    """The Yahoo symbol to fetch: the spot metal's future for XAUUSD=X and friends, else unchanged."""
+    s = str(symbol or "").upper()
+    return SPOT_PROXY.get(s, s)
+
+
 def yahoo_query_symbol(yahoo):
     """Path or query token. Stocks keep BRK.B -> BRK-B. A =X or =F symbol is percent-encoded."""
     y = str(yahoo or "").upper().replace(".", "-")
@@ -510,7 +522,7 @@ def tradingview_symbol(symbol):
     if prof["market"] == "forex":
         return "FX_IDC:" + yahoo[:-2]
     if prof.get("spot"):
-        return "OANDA:" + yahoo[:-2]
+        return "OANDA:" + prof["symbol"][:-2]
     return TRADINGVIEW_FUTURES.get(yahoo) or (yahoo[:-2] + "1!")
 
 

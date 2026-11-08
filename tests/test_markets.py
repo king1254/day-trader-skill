@@ -61,6 +61,11 @@ class Profiles(unittest.TestCase):
         self.assertEqual((gold["market"], gold["symbol"], gold["unit"], gold["point_value"]),
                          ("commodity", "XAUUSD=X", "ounce", 1.0))
         self.assertEqual(markets.classify("XAUUSD")["symbol"], "XAUUSD=X")
+        self.assertEqual(gold["yahoo"], "GC=F")
+        self.assertEqual(markets.data_symbol("XAUUSD=X"), "GC=F")
+        self.assertEqual(markets.data_symbol("XAGUSD=X"), "SI=F")
+        self.assertEqual(markets.data_symbol("GOLD"), "GOLD")
+        self.assertEqual(markets.data_symbol("EURUSD=X"), "EURUSD=X")
         gc = markets.classify("GC=F")
         self.assertEqual((gc["name"], gc["point_value"], gc["unit"]), ("Gold", 100.0, "contract"))
 

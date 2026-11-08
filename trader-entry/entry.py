@@ -384,11 +384,14 @@ def get_chart(sym, interval, day=None, offline=None, today=None):
             raise EntryError("could not read %s: %s" % (f, e))
     else:
         today = today or to_eastern(utc_now()).date()
-        path = chart_path(sym, chart_range(day or today, today, interval), interval)
+        path = chart_path(markets.data_symbol(sym), chart_range(day or today, today, interval), interval)
         if prof["market"] != "equity":
             path += "&includePrePost=true"
         text = yahoo_get(path)
     ch = parse_chart(text, sym)
+    if ch["symbol"] == markets.data_symbol(sym) != sym:
+        ch["symbol"] = sym
+        ch["data_note"] = prof.get("data_note")
     if ch["symbol"] != yahoo_symbol(sym):
         raise EntryError("the chart file holds %s, not %s" % (ch["symbol"], sym))
     gran = ch["meta"].get("dataGranularity")
@@ -904,6 +907,8 @@ def cmd_check(a):
     else:
         for line in describe(res):
             print(line)
+        if chart.get("data_note"):
+            print("Note: %s." % chart["data_note"])
         print("Chart on TradingView: %s" % markets.tradingview_url(sym))
         if a.write:
             print("Wrote %s (status %s)." % (a.write, res["status"]))

@@ -484,3 +484,128 @@ def universe(market):
 
 def suggest_micro(yahoo):
     return MICRO_OF.get(yahoo)
+
+
+# ---------------------------------------------------------------- TradingView chart links
+# A link only: prices still come from Yahoo. TradingView has no public data API.
+
+TRADINGVIEW_CHART = "https://www.tradingview.com/chart/?symbol=%s"
+TRADINGVIEW_FUTURES = {
+    "GC=F": "COMEX:GC1!", "MGC=F": "COMEX:MGC1!", "SI=F": "COMEX:SI1!", "SIL=F": "COMEX:SIL1!",
+    "HG=F": "COMEX:HG1!", "PL=F": "NYMEX:PL1!", "PA=F": "NYMEX:PA1!",
+    "CL=F": "NYMEX:CL1!", "MCL=F": "NYMEX:MCL1!", "BZ=F": "NYMEX:BZ1!", "NG=F": "NYMEX:NG1!",
+    "HO=F": "NYMEX:HO1!", "RB=F": "NYMEX:RB1!",
+    "ZC=F": "CBOT:ZC1!", "ZW=F": "CBOT:ZW1!", "ZS=F": "CBOT:ZS1!",
+    "KC=F": "ICEUS:KC1!", "CT=F": "ICEUS:CT1!", "SB=F": "ICEUS:SB1!", "CC=F": "ICEUS:CC1!",
+    "LE=F": "CME:LE1!", "HE=F": "CME:HE1!",
+}
+
+
+def tradingview_symbol(symbol):
+    """TSLA -> TSLA, BRK-B -> BRK.B, EURUSD=X -> FX_IDC:EURUSD, XAUUSD=X -> OANDA:XAUUSD, CL=F -> NYMEX:CL1!."""
+    prof = symbol if isinstance(symbol, dict) else classify(symbol)
+    if prof["market"] == "equity":
+        return str(prof["symbol"]).upper().replace("-", ".")
+    yahoo = prof["yahoo"]
+    if prof["market"] == "forex":
+        return "FX_IDC:" + yahoo[:-2]
+    if prof.get("spot"):
+        return "OANDA:" + yahoo[:-2]
+    return TRADINGVIEW_FUTURES.get(yahoo) or (yahoo[:-2] + "1!")
+
+
+def tradingview_url(symbol):
+    return TRADINGVIEW_CHART % urllib.parse.quote(tradingview_symbol(symbol), safe="")
+
+
+# ---------------------------------------------------------------- ForexFactory economic calendar
+# The weekly feed ForexFactory publishes for scripts, refreshed through the week.
+
+FF_CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+IMPACTS = ("High", "Medium", "Low", "Holiday")
+FF_CURRENCY = {"CNH": "CNY"}
+
+
+def _event_utc(text):
+    """ForexFactory's '2026-11-08T17:30:00-05:00' -> naive UTC, or None."""
+    try:
+        dt = datetime.datetime.fromisoformat(str(text).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return None
+    return (dt - dt.utcoffset()).replace(tzinfo=None)
+
+
+def parse_calendar(data):
+    """Feed JSON (bytes, text or list) -> events sorted by time, each with a UTC "time" string."""
+    import json
+    if isinstance(data, bytes):
+        data = data.decode("utf-8", "replace")
+    rows = json.loads(data) if isinstance(data, str) else data
+    if not isinstance(rows, list):
+        raise ValueError("the calendar is not a list of events")
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        when = _event_utc(r.get("date"))
+        if when is None:
+            continue
+        out.append({
+            "title": str(r.get("title") or "").strip(),
+            "currency": str(r.get("country") or "").strip().upper(),
+            "impact": str(r.get("impact") or "").strip().title(),
+            "time": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "forecast": str(r.get("forecast") or ""),
+            "previous": str(r.get("previous") or ""),
+        })
+    out.sort(key=lambda e: (e["time"], e["currency"], e["title"]))
+    return out
+
+
+def event_time(event):
+    return datetime.datetime.strptime(event["time"], "%Y-%m-%dT%H:%M:%SZ")
+
+
+def calendar_currencies(symbol):
+    """The currencies whose news moves this symbol. Commodities and metals are priced in USD."""
+    prof = symbol if isinstance(symbol, dict) else classify(symbol)
+    if prof["market"] == "forex":
+        return {FF_CURRENCY.get(prof["base"], prof["base"]), FF_CURRENCY.get(prof["quote"], prof["quote"])}
+    return {"USD"}
+
+
+def calendar_for(events, currencies=None, impacts=None):
+    """Events for these currencies (None = all) and impacts (None = all). "All" events always match."""
+    cur = {c.upper() for c in currencies} if currencies else None
+    imp = {i.title() for i in impacts} if impacts else None
+    out = []
+    for e in events:
+        if cur is not None and e["currency"] not in cur and e["currency"] != "ALL":
+            continue
+        if imp is not None and e["impact"] not in imp:
+            continue
+        out.append(e)
+    return out
+
+
+def news_blackout(events, now_utc, symbol, minutes=30, impacts=("High",)):
+    """Events for this symbol's currencies within +/- minutes of now (naive UTC)."""
+    if not minutes or minutes <= 0:
+        return []
+    span = datetime.timedelta(minutes=float(minutes))
+    hits = []
+    for e in calendar_for(events, calendar_currencies(symbol), impacts):
+        t = event_time(e)
+        if t - span <= now_utc <= t + span:
+            hits.append(e)
+    return hits
+
+
+def calendar_covers(events, now_utc):
+    """True when the saved calendar's week includes now (the feed is one week, Sunday to Saturday)."""
+    if not events:
+        return False
+    first, last = event_time(events[0]), event_time(events[-1])
+    return first - datetime.timedelta(days=2) <= now_utc <= last + datetime.timedelta(days=2)

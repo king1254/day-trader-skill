@@ -40,6 +40,7 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --now "2026-10-19 10:15"  # pin the clock
 | `trader/portfolio.json` | cash and holdings; if missing, a fresh account funded with the budget |
 | `trader/prices.json` | a fresh price raises the entry it measures risk from; also values holdings |
 | `trader/state/broker.json` | what was placed today: duplicates, trades per day, daily loss, day trades |
+| `trader/calendar.json` | this week's ForexFactory releases, from `news.py --calendar` (forex and commodity entries only) |
 | `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
 
 ## Entries and exits
@@ -71,6 +72,7 @@ batch that is fine order by order but breaks a limit together is caught.
 | trades | (entries) `max_trades_per_day` entries already placed today |
 | window | (entries) before `no_entries_before` or after `no_entries_after`, or the market is closed |
 | pdt | (entries, only with `pdt_guard` true) 3 day trades already in the last 5 business days |
+| news | (forex and commodity entries) a High-impact release for the pair's currencies (USD for commodities) within `news_blackout_minutes` (default 30, 0 turns it off) before or after now; `news_blackout_impact` sets which impacts count. No calendar for this week is a warning, not a block |
 | duplicate | (entries) the same symbol and side twice in one batch, or already placed today |
 | daily limit | (entries) `max_orders_per_day` orders already placed today |
 

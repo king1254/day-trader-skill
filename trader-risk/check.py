@@ -53,6 +53,10 @@ What blocks an entry (on top):
                 3 hours earlier too)
   pdt           only with "pdt_guard": true: 3 day trades already in the last
                 5 business days (a 4th would trip the old pattern-day-trader rule)
+  news          forex and commodity entries only: a High-impact ForexFactory
+                event for that currency (USD for commodities) within
+                news_blackout_minutes of now (trader/calendar.json, written by
+                news.py --calendar). Stocks are not checked.
 
 Exit code 0 when every order passes, 1 when any order is blocked.
 The verdicts go to trader/state/risk.json with a fingerprint of each order,
@@ -90,6 +94,7 @@ DEFAULTS = {
     "no_entries_before": "09:45", "no_entries_after": "15:30", "flat_by": "15:55",
     "paper": True, "blocked": [], "allow_options": False, "allow_margin": False, "allow_short": False,
     "pdt_guard": False, "allow_leverage": False, "max_leverage": 1, "fx_usd_per_quote": {},
+    "news_blackout_minutes": 30, "news_blackout_impact": ["High"],
 }
 ALPACA_FIELDS = ("symbol", "side", "qty", "notional", "type", "time_in_force", "limit_price",
                  "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
@@ -386,11 +391,34 @@ def day_trades(state, today):
 
 # ---------------------------------------------------------------- the check
 
-def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None):
+def news_reasons(calendar, now_utc, prof, c, warns):
+    """BLOCK reasons for a forex or commodity entry near a big scheduled release."""
+    minutes = _f(c.get("news_blackout_minutes"))
+    if not minutes or minutes <= 0:
+        return []
+    if not calendar or not markets.calendar_covers(calendar, now_utc):
+        warns.append("no economic calendar for this week: run news.py --calendar so High-impact releases "
+                     "for %s can be checked" % "/".join(sorted(markets.calendar_currencies(prof))))
+        return []
+    impacts = c.get("news_blackout_impact") or ["High"]
+    if isinstance(impacts, str):
+        impacts = [impacts]
+    out = []
+    for e in markets.news_blackout(calendar, now_utc, prof, minutes, impacts):
+        at = to_eastern(markets.event_time(e)).strftime("%a %H:%M")
+        out.append("news: %s %s (%s impact) at %s New York is within %s minutes; no new %s entries around it "
+                   "(news_blackout_minutes)" % (e["currency"], e["title"], e["impact"], at, _num(minutes),
+                                                prof["market"]))
+    return out
+
+
+def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=None, price_times=None,
+          calendar=None):
     """Pure function. Returns {"results": [...], "pass": n, "block": n, "warnings": [...]}.
 
     now          naive UTC (default: the real clock); its New York date is "today"
-    price_times  {SYM: naive UTC time of that price}; None = every price counts as fresh"""
+    price_times  {SYM: naive UTC time of that price}; None = every price counts as fresh
+    calendar     ForexFactory events (markets.parse_calendar); None = no calendar saved"""
     c = dict(DEFAULTS)
     c.update(cfg or {})
     prices = {str(k).upper(): float(v) for k, v in (prices or {}).items() if _f(v)}
@@ -700,6 +728,7 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 fx_reasons, fx_warns = markets.window_reasons(now_et, c, prof)
                 later.extend(fx_reasons)
                 warns.extend(fx_warns)
+                later.extend(news_reasons(calendar, now_utc, prof, c, warns))
             else:
                 later.extend(win_reasons)
             if (not non_eq) and c.get("pdt_guard") and pdt_n >= 3:
@@ -858,6 +887,8 @@ def main(argv=None):
                     help="your account; if missing, a fresh account funded with the budget")
     ap.add_argument("--prices", default="trader/prices.json")
     ap.add_argument("--state", default="trader/state/broker.json", help="what trader-broker placed today")
+    ap.add_argument("--calendar", default="trader/calendar.json",
+                    help="ForexFactory events saved by news.py --calendar (forex and commodity entries)")
     ap.add_argument("--now", help="pretend it is this New York time, e.g. \"2026-10-19 10:15\"")
     ap.add_argument("--today", help="YYYY-MM-DD (default: today in New York)")
     ap.add_argument("--out", default="trader/state/risk.json", help="where the verdicts are recorded")
@@ -877,7 +908,10 @@ def main(argv=None):
         pdoc = read_json(a.prices, "prices", required=False) or {}
         prices, times = load_prices(pdoc)
         state = read_json(a.state, "broker state", required=False)
-        res = check(orders, cfg, portfolio, prices, state, a.today, now, times)
+        cal = read_json(a.calendar, "economic calendar", required=False)
+        events = cal.get("events") if isinstance(cal, dict) else cal
+        res = check(orders, cfg, portfolio, prices, state, a.today, now, times,
+                    events if isinstance(events, list) else None)
         if pdoc.get("as_of"):
             res["prices_as_of"] = pdoc["as_of"]
         if not a.no_write:

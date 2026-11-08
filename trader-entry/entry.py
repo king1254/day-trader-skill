@@ -642,7 +642,8 @@ def entry_doc(res, now_utc):
             "bar_index": t.get("bar_index"), "price": t.get("price"), "level": res.get("level"),
             "interval": res["interval"],
             "opening_range": {"high": orr["high"], "low": orr["low"], "minutes": orr["minutes"]} if orr else None,
-            "source": "yahoo", "checked_at": iso(now_utc), "reason": res.get("reason")}
+            "source": "yahoo", "checked_at": iso(now_utc), "reason": res.get("reason"),
+            "tradingview": markets.tradingview_url(res["symbol"])}
 
 
 def write_json(path, doc):
@@ -903,6 +904,7 @@ def cmd_check(a):
     else:
         for line in describe(res):
             print(line)
+        print("Chart on TradingView: %s" % markets.tradingview_url(sym))
         if a.write:
             print("Wrote %s (status %s)." % (a.write, res["status"]))
     return 0 if res["status"] == "triggered" else 1

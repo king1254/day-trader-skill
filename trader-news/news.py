@@ -505,6 +505,83 @@ def _json_ready(items):
     return out
 
 
+def calendar_currencies_for(watch):
+    """The currencies behind the forex and commodity symbols you watch, or None for every currency."""
+    cur = set()
+    for t in watch:
+        prof = markets.classify(t)
+        if prof["market"] != "equity":
+            cur |= markets.calendar_currencies(prof)
+    return cur or None
+
+
+def render_calendar(events, now, currencies, impacts, hours_back=2):
+    """Upcoming events in New York time, today first. now is aware UTC."""
+    now_utc = now.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+    start = now_utc - _dt.timedelta(hours=hours_back)
+    shown = [e for e in markets.calendar_for(events, currencies, impacts) if markets.event_time(e) >= start]
+    out = ["Economic calendar (ForexFactory), %s, impact %s, %s:" % (
+        "currencies " + ", ".join(sorted(currencies)) if currencies else "all currencies",
+        "/".join(impacts), to_eastern(now).strftime("%Y-%m-%d %H:%M ET"))]
+    if not shown:
+        out.append("Nothing scheduled from now to the end of the week.")
+    day = None
+    for e in shown:
+        local = to_eastern(markets.event_time(e))
+        if local.date() != day:
+            day = local.date()
+            out.append(day.strftime("%a %Y-%m-%d"))
+        mark = "!" if e["impact"] == "High" else " "
+        nums = []
+        if e["forecast"]:
+            nums.append("forecast " + e["forecast"])
+        if e["previous"]:
+            nums.append("previous " + e["previous"])
+        out.append("%s %s ET  %-4s %-7s %s%s" % (mark, local.strftime("%H:%M"), e["currency"], e["impact"],
+                                               e["title"], ("  (" + ", ".join(nums) + ")") if nums else ""))
+    out.append("! = High impact. /trader-risk blocks new forex and commodity entries near High-impact events "
+               "for that currency (news_blackout_minutes). Not financial advice.")
+    return "\n".join(out) + "\n"
+
+
+def cmd_calendar(args, watch, now):
+    fetcher = Fetcher(None, offline=args.offline)
+    try:
+        events = markets.parse_calendar(fetcher.get(markets.FF_CALENDAR_URL, "ff_calendar_thisweek.json"))
+    except (NewsError, ValueError) as exc:
+        print("news: economic calendar: %s" % exc, file=sys.stderr)
+        return 2
+    impacts = [i.strip().title() for i in args.impact.split(",") if i.strip()]
+    bad = [i for i in impacts if i not in markets.IMPACTS]
+    if bad:
+        print("news: --impact takes %s, not %s" % (", ".join(markets.IMPACTS), ", ".join(bad)), file=sys.stderr)
+        return 2
+    if args.currencies:
+        currencies = {c.strip().upper() for c in args.currencies.split(",") if c.strip()}
+    else:
+        currencies = calendar_currencies_for(watch)
+    if not args.dry_run and args.calendar_out:
+        folder = os.path.dirname(args.calendar_out)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        with open(args.calendar_out, "w", encoding="utf-8") as fh:
+            json.dump({"created_by": "trader-news", "source": "forexfactory", "url": markets.FF_CALENDAR_URL,
+                       "fetched_at": now.astimezone(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "events": events}, fh, indent=2)
+            fh.write("\n")
+    if args.json:
+        now_utc = now.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        shown = [e for e in markets.calendar_for(events, currencies, impacts)
+                 if markets.event_time(e) >= now_utc - _dt.timedelta(hours=2)]
+        print(json.dumps({"checked": now.isoformat(), "currencies": sorted(currencies) if currencies else None,
+                          "impacts": impacts, "events": shown}, indent=2))
+    else:
+        sys.stdout.write(render_calendar(events, now, currencies, impacts))
+        if not args.dry_run and args.calendar_out:
+            print("Wrote %s (%d events this week)." % (args.calendar_out, len(events)))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--tickers", nargs="*", help="default: watchlist + plan + portfolio")
@@ -524,6 +601,13 @@ def main(argv=None):
     ap.add_argument("--now", help="ISO time, for reproducible runs")
     ap.add_argument("--dry-run", action="store_true", help="do not update the state file")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--calendar", action="store_true",
+                    help="the ForexFactory economic calendar for this week instead of headlines")
+    ap.add_argument("--currencies", help="calendar currencies, e.g. USD,EUR (default: from your forex and "
+                                         "commodity tickers, else all)")
+    ap.add_argument("--impact", default="High,Medium", help="calendar impacts to show: High,Medium,Low,Holiday")
+    ap.add_argument("--calendar-out", default="trader/calendar.json",
+                    help="where the calendar is saved for /trader-risk")
     args = ap.parse_args(argv)
 
     if args.tickers:
@@ -532,6 +616,9 @@ def main(argv=None):
         watch.update({t: known[t] for t in watch if known.get(t)})
     else:
         watch = watch_from_files(args.portfolio, args.watchlist, args.plan)
+    if args.calendar:
+        now = parse_time(args.now) if args.now else _dt.datetime.now(_dt.timezone.utc)
+        return cmd_calendar(args, watch, now)
     if not watch:
         print("news: no tickers. Pass --tickers, or run /trader-scanner first (it writes "
               "trader/watchlist.json).", file=sys.stderr)

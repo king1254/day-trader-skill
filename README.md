@@ -3,8 +3,9 @@
 11 Claude skills for day trading: scan thousands of charts, track breaking news, time every entry and exit, and replay every outcome before you risk a dollar.
 
 Free, MIT, no signup, no API key. The tools are plain Python that read free
-public data: Yahoo Finance charts, Nasdaq Trader's symbol lists, SEC EDGAR
-and the House Clerk.
+public data: Yahoo Finance charts, Nasdaq Trader's symbol lists, SEC EDGAR,
+the House Clerk, and ForexFactory's economic calendar. Every scan hit, entry
+and exit plan also links to its TradingView chart.
 
 One scans thousands of charts for setups, on US stocks, forex, or commodities.
 Another tracks breaking news on every symbol you watch. One watches a setup
@@ -195,6 +196,10 @@ Futures need the Yahoo form (`CL=F`) or an alias (`OIL`, `GOLD`, `NATGAS`).
 With the stock default entry times still in the config (09:45, 15:30, 15:55), a forex or commodity plan uses 15 minutes after its own open, 30 minutes before its close, and 5 minutes before the flat. A time you changed yourself is kept.
 
 **Cash.** One micro lot of EURUSD ties up about the price times $1,000. One full crude contract ties up the price times $1,000, so oil at $70 is $70,000. The budget uses that full notional, so a $5,000 account can hold a few micro lots and will refuse a full-size contract. Set `"allow_leverage": true` and `"max_leverage"` only when your broker margins the trade. A pair quoted in a currency other than USD, such as EURGBP, needs `"fx_usd_per_quote": {"GBP": 1.27}` (dollars per 1 unit of the quote currency) or sizing stops.
+
+**Economic calendar (ForexFactory).** `/trader-news --calendar` reads ForexFactory's weekly calendar feed and lists the releases still ahead this week in New York time, filtered to your pairs' currencies (USD for commodities). It saves the week to `trader/calendar.json`. `/trader-risk` then blocks a new forex or commodity entry within 30 minutes of a High-impact release for that currency, such as US CPI for EURUSD or gold. Change the gap with `"news_blackout_minutes"` (0 turns it off) and the impacts with `"news_blackout_impact"`. Stocks are not affected. Run the calendar once a day; ForexFactory asks scripts not to poll often.
+
+**TradingView charts.** Scan hits, `/trader-entry` and `/trader-exit` print a TradingView chart link (`FX_IDC:EURUSD`, `OANDA:XAUUSD`, `NYMEX:CL1!`, or the stock ticker) and save it in the JSON as `"tradingview"`. It is a link only: TradingView has no public data API, so prices still come from Yahoo, and a TradingView feed can differ slightly from Yahoo's.
 
 **Orders.** Alpaca's stock tool places US stocks and ETFs. `/trader-broker` still waits for your yes on a forex or commodity ticket, then tells you to send it through an FX or futures broker. `/trader-analyst` and `/trader-pelosi` stay on US stocks. Nothing here is financial advice, and no order is placed without your yes.
 

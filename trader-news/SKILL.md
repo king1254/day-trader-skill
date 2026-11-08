@@ -10,7 +10,7 @@ description: >-
   the user says "any news on TSLA", "why is this moving", "what's the news on
   my watchlist", "morning briefing", "pre-market news", "monitor the news",
   "did anything break", "check the 8-Ks", or after /trader-scanner finds setups.
-argument-hint: "[tickers]"
+argument-hint: "[tickers] [--calendar]"
 ---
 
 # trader-news
@@ -27,7 +27,19 @@ Tool in this folder (standard library Python, no keys):
 python3 "${CLAUDE_SKILL_DIR}/news.py"                         # watchlist + plan + portfolio
 python3 "${CLAUDE_SKILL_DIR}/news.py" --tickers TSLA NVDA --hours 12
 python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
+python3 "${CLAUDE_SKILL_DIR}/news.py" --calendar              # ForexFactory economic calendar
+python3 "${CLAUDE_SKILL_DIR}/news.py" --calendar --tickers EURUSD GOLD --impact High
 ```
+
+`--calendar` reads ForexFactory's weekly economic calendar
+(`https://nfs.faireconomy.media/ff_calendar_thisweek.json`), shows the
+releases still ahead this week in New York time (High and Medium impact by
+default, `!` marks High), filtered to the currencies behind your forex and
+commodity tickers (both sides of a pair; USD for commodities and metals; all
+currencies when you watch only stocks). It saves the week to
+`trader/calendar.json`, which `/trader-risk` uses to block new forex and
+commodity entries next to a High-impact release. Run it once a day, before
+the session; ForexFactory asks scripts not to poll the feed often.
 
 ## What it reads and writes
 
@@ -40,6 +52,7 @@ python3 "${CLAUDE_SKILL_DIR}/news.py" --no-sec --json
 | Yahoo Finance chart endpoint | the last price against yesterday's close (unofficial, can lag) |
 | SEC EDGAR company Atom feed | 8-K by default (`--forms 8-K,10-Q` for more); needs `sec_user_agent` in `trader/config.json` or `SEC_USER_AGENT`, else filings are skipped with a note |
 | `trader/state/news.json` | what has been shown (kept 30 days) and each ticker's CIK |
+| ForexFactory calendar feed | `--calendar` only: this week's scheduled releases, written to `trader/calendar.json` |
 
 ## The rules
 

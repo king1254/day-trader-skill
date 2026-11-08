@@ -1073,7 +1073,7 @@ def cmd_daily(a):
            "market": market,
            "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
            "source": "yahoo", "filters": {"min_price": a.min_price, "min_volume": a.min_volume},
-           "note": NOTE, "hits": hits}
+           "note": NOTE, "hits": hits, "tradingview": chart_links(hits)}
     if a.offline:
         doc["offline"] = os.path.basename(a.offline.rstrip("/"))
     if not a.no_write:
@@ -1106,12 +1106,18 @@ def cmd_daily(a):
         else:
             print("  %-10s %12s  RSI %5.1f  %s" % (h["symbol"], "$" + markets.format_price(prof, h["price"]),
                                                    h["rsi"], tags))
+        print("      chart: %s" % doc["tradingview"][h["symbol"]])
     if len(hits) > a.show:
         print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
     if not a.no_write:
         print("Wrote %s (mode daily, %d hit%s)." % (a.out, len(hits), "" if len(hits) == 1 else "s"))
     print(NOTE + " Next: pick one chart, then /trader-news TICKER.")
     return 0 if hits else 1
+
+
+def chart_links(hits):
+    """{symbol: TradingView chart URL}. A link to look at; the scan's prices are Yahoo's."""
+    return {h["symbol"]: markets.tradingview_url(h["symbol"]) for h in hits}
 
 
 def _n(x):
@@ -1176,7 +1182,8 @@ def cmd_orb(a):
            "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
            "unconfirmed": counts["unconfirmed"], "source": "yahoo", "or_minutes": a.or_minutes,
            "interval": "%dm" % BAR_MIN,
-           "filters": {"min_price": a.min_price, "min_volume": a.min_volume}, "note": NOTE, "hits": hits}
+           "filters": {"min_price": a.min_price, "min_volume": a.min_volume}, "note": NOTE, "hits": hits,
+           "tradingview": chart_links(hits)}
     if a.offline:
         doc["offline"] = os.path.basename(a.offline.rstrip("/"))
     if not a.no_write:
@@ -1214,6 +1221,7 @@ def cmd_orb(a):
                 print("  %8s  %-10s %12s  range %s to %s  %+.2f%% over" % (
                     h["at"], h["symbol"], "$" + markets.format_price(prof, h["price"]),
                     markets.format_price(prof, h["or_low"]), markets.format_price(prof, h["or_high"]), h["pct_over"]))
+            print("            chart: %s" % doc["tradingview"][h["symbol"]])
         if len(hits) > a.show:
             print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
     else:

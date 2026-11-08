@@ -660,6 +660,7 @@ def build_plan(a, now_utc):
     if prof["market"] != "equity":
         plan["market"] = prof["market"]
         plan["unit"] = prof["unit"]
+    plan["tradingview"] = markets.tradingview_url(prof)
     if atr is not None:
         plan["atr"] = round(atr, 4)
         plan["atr_bars"] = atr_n
@@ -705,6 +706,8 @@ def describe(plan):
     out.append("  Risk a %s  %s (%s%% of the entry)" % (unit, px(plan["risk_per_share"]), pct))
     out.append("  Reward:risk   %s" % ratio(plan["reward_risk"]))
     out.append("  Flat by       %s ET, win or lose: no overnight hold" % plan["flat_by"])
+    if plan.get("tradingview"):
+        out.append("  Chart         %s" % plan["tradingview"])
     out.append("Set before the entry. If price hits the stop, you are out; never move it further away.")
     out.append(NOTE)
     return out

@@ -896,12 +896,13 @@ def market_hours(symbols, session_name, day):
 
 
 def relax_floors(a, market):
-    """The stock defaults ($5 and 1,000,000 shares) would hide every forex pair."""
+    """The stock defaults ($5 and 1,000,000 shares) would hide every forex pair and future
+    (forex has no volume; gold futures trade about 200,000 contracts a day)."""
     if market == "equity":
         return
     if a.min_price == 5 or a.min_price == 5.0:
         a.min_price = 0
-    if market == "forex" and a.min_volume == 1000000:
+    if a.min_volume == 1000000:
         a.min_volume = 0
 
 

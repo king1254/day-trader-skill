@@ -6,12 +6,13 @@ Free, MIT, no signup, no API key. The tools are plain Python that read free
 public data: Yahoo Finance charts, Nasdaq Trader's symbol lists, SEC EDGAR
 and the House Clerk.
 
-One scans thousands of charts for setups. Another tracks breaking news on
-every stock you watch. One watches a setup bar by bar and tells you the moment
-to get in, and another sets your stop and your target before you do. And the
-craziest one is the Time Machine: before you risk a dollar, it replays the
-rest of the session 10,000 times from the stock's own recent bars, plus every
-past day the same setup fired, and tells you the honest odds.
+One scans thousands of charts for setups, on US stocks, forex, or commodities.
+Another tracks breaking news on every symbol you watch. One watches a setup
+bar by bar and tells you the moment to get in, and another sets your stop and
+your target before you do. And the craziest one is the Time Machine: before
+you risk a dollar, it replays the rest of the session 10,000 times from that
+symbol's own recent bars, plus every past day the same setup fired, and tells
+you the honest odds.
 
 And no trade goes through until you say yes. Nothing in this pack can place
 an order on its own. Paper trading is the default.
@@ -26,7 +27,7 @@ an order on its own. Paper trading is the default.
 Paste this into Claude:
 
 ```
-https://github.com/Jakeschincariol/day-trader-skill
+https://github.com/king1254/day-trader-skill.git
 
 install skill
 ```
@@ -34,7 +35,7 @@ install skill
 Or as a plugin, in Claude Code:
 
 ```
-/plugin marketplace add Jakeschincariol/day-trader-skill
+/plugin marketplace add king1254/day-trader-skill
 /plugin install day-trader-skill@day-trader-skill
 ```
 
@@ -43,7 +44,7 @@ Claude Code namespaces plugin skills, so installed as a plugin they show up as
 plain `/trader-scanner`:
 
 ```bash
-git clone https://github.com/Jakeschincariol/day-trader-skill.git
+git clone https://github.com/king1254/day-trader-skill.git
 cp -r day-trader-skill/trader-* ~/.claude/skills/
 ```
 
@@ -61,16 +62,16 @@ or in the `SEC_USER_AGENT` environment variable.
 
 | command | job | what it does |
 | --- | --- | --- |
-| `/trader-scanner` | Chart Scanner | Scans thousands of charts for setups: opening-range breakouts, flags, oversold bounces. |
-| `/trader-news` | News Monitor | Tracks breaking news on every stock you watch and flags what moves it. |
-| `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in. |
-| `/trader-exit` | Exit Planner | Sets your stop and your target before you enter, so you know when to get out. |
-| `/trader-timemachine` | Time Machine | Replays every possible outcome of a trade before you risk a dollar: 10,000 simulated sessions plus every past time the setup fired. |
-| `/trader-risk` | Risk Manager | Checks every trade against your limits and stops anything over them. |
-| `/trader-budget` | Budget Manager | Sizes every position to your budget and your max loss per trade. |
-| `/trader-broker` | Order Executor | Sends approved orders to your broker, paper trading by default, never without your yes. |
-| `/trader-alerts` | Price Alerts | Rings when a price, a stop or the opening bell hits. |
-| `/trader-analyst` | Earnings Analyst | Reads earnings reports and sums up what changed. |
+| `/trader-scanner` | Chart Scanner | Scans US stocks, forex, or commodities for setups: opening-range breakouts, flags, oversold bounces. One scan is one market. |
+| `/trader-news` | News Monitor | Tracks breaking news on every stock, forex pair, or commodity you watch and flags what moves it. |
+| `/trader-entry` | Entry Timer | Watches a setup bar by bar and tells you the moment to get in, on the session for that market. |
+| `/trader-exit` | Exit Planner | Sets your stop and your target before you enter, in cents, pips, or ticks. |
+| `/trader-timemachine` | Time Machine | Replays every possible outcome of a stock, forex, or commodity trade before you risk a dollar: 10,000 simulated sessions plus every past time the setup fired. |
+| `/trader-risk` | Risk Manager | Checks every trade against your limits and stops anything over them. Forex and futures are not subject to the stock pattern-day-trader count. |
+| `/trader-budget` | Budget Manager | Sizes every position to your budget and your max loss: shares, micro lots, contracts, or ounces. |
+| `/trader-broker` | Order Executor | Sends approved stock orders to your broker, paper trading by default, never without your yes. Forex and commodity tickets go to your FX or futures broker. |
+| `/trader-alerts` | Price Alerts | Rings when a stock, forex, or commodity price, a stop, or the opening bell hits. |
+| `/trader-analyst` | Earnings Analyst | Reads US-stock earnings reports and sums up what changed. |
 | `/trader-pelosi` | Pelosi Tracker | Reads Congress's stock-trade disclosures the minute they are filed. |
 
 ## How to use it
@@ -143,6 +144,18 @@ python3 trader-analyst/facts.py TSLA                                   # quarter
 python3 trader-pelosi/ptr.py index --member pelosi                     # her PTRs this year
 ```
 
+The same commands take a forex or commodity symbol. One scan is one market:
+
+```bash
+python3 trader-scanner/scan.py universe --market forex                 # majors and liquid crosses
+python3 trader-scanner/scan.py universe --market commodity              # spot metals and listed futures
+python3 trader-scanner/scan.py orb --market forex --at 10:15            # New York session, 08:00 to 17:00
+python3 trader-scanner/scan.py orb --market forex --session london      # London session, 03:00 to 12:00
+python3 trader-entry/entry.py check EURUSD --setup orb                  # EURUSD=X, pip prices
+python3 trader-entry/entry.py check OIL --setup orb                     # WTI crude, CL=F
+python3 trader-entry/entry.py check GOLD --setup orb --session london   # spot gold, XAUUSD=X
+```
+
 ```bash
 python3 -m unittest discover -s tests -v
 ```
@@ -154,26 +167,36 @@ real XBRL facts. They reproduce every number in the example above.
 
 ## Forex and commodities
 
-The same pipeline works on forex and commodities. One scan is one market.
-Pass `--market forex` or `--market commodity` to `/trader-scanner`. A bare
-stock ticker stays a stock: CL is Colgate, OIL is WTI crude (`CL=F`), GOLD is
-spot gold (`XAUUSD=X`). Six-letter pairs such as EURUSD and EUR/USD are forex.
+The pipeline above is the same for forex and commodities. Pass
+`--market forex` or `--market commodity` to `/trader-scanner`. Leave it off
+and the scan stays on US stocks.
 
-Forex uses the New York session, 08:00 to 17:00, on weekdays including US
-holidays. `--session london` is 03:00 to 12:00. Commodities use the US day
-session for that product and close on the same holidays as the NYSE. Spot
-metals follow the forex session.
+| you type | market | Yahoo symbol | sized as |
+| --- | --- | --- | --- |
+| `EURUSD`, `EUR/USD` | forex | `EURUSD=X` | micro lots of 1,000 base units |
+| `USDJPY` | forex | `USDJPY=X` | micro lots, 3 decimals |
+| `GOLD`, `XAUUSD` | spot metal | `XAUUSD=X` | ounces |
+| `OIL`, `WTI` | energy future | `CL=F` | contracts |
+| `CL` | US stock | `CL` | shares (Colgate) |
+| `NG` | US stock | `NG` | shares (NovaGold) |
+| `NATGAS` | energy future | `NG=F` | contracts |
 
-Sizing is in whole micro lots (1,000 units of the base currency), whole
-contracts, or whole ounces. Cash used is the full notional. Set
-`allow_leverage` and `max_leverage` in `trader/config.json` only if your
-broker margins the trade. A cross that is not quoted in USD needs
-`fx_usd_per_quote` (dollars per 1 unit of the quote currency) or sizing stops.
+`CL`, `NG`, `GC`, `SI`, and the other short tickers stay the listed stock.
+Futures need the Yahoo form (`CL=F`) or an alias (`OIL`, `GOLD`, `NATGAS`).
 
-Alpaca's stock tool cannot place a forex or commodity order. `/trader-broker`
-still waits for your yes, then tells you to send the ticket through an FX or
-futures broker. `/trader-analyst` and `/trader-pelosi` stay on US stocks.
-Nothing here is financial advice, and no order is placed without your yes.
+**Sessions**, all in New York time, one open and one close on the same date:
+
+- Forex, default: 08:00 to 17:00, weekdays, including US holidays. `--session london` is 03:00 to 12:00. Set `"forex_session": "london"` in `trader/config.json` to keep that choice.
+- Metals futures (`GC=F`, `SI=F`, and the micros): 08:20 to 13:30.
+- Energy (`CL=F`, `NG=F`, `BZ=F`): 09:00 to 14:30.
+- Grains: 09:30 to 14:20. Softs: 08:00 to 13:30. Livestock: 09:30 to 14:05.
+- Spot metals use the forex session. Commodity futures close on the same holidays as the NYSE.
+
+With the stock default entry times still in the config (09:45, 15:30, 15:55), a forex or commodity plan uses 15 minutes after its own open, 30 minutes before its close, and 5 minutes before the flat. A time you changed yourself is kept.
+
+**Cash.** One micro lot of EURUSD ties up about the price times $1,000. One full crude contract ties up the price times $1,000, so oil at $70 is $70,000. The budget uses that full notional, so a $5,000 account can hold a few micro lots and will refuse a full-size contract. Set `"allow_leverage": true` and `"max_leverage"` only when your broker margins the trade. A pair quoted in a currency other than USD, such as EURGBP, needs `"fx_usd_per_quote": {"GBP": 1.27}` (dollars per 1 unit of the quote currency) or sizing stops.
+
+**Orders.** Alpaca's stock tool places US stocks and ETFs. `/trader-broker` still waits for your yes on a forex or commodity ticket, then tells you to send it through an FX or futures broker. `/trader-analyst` and `/trader-pelosi` stay on US stocks. Nothing here is financial advice, and no order is placed without your yes.
 
 ## Fine print
 
@@ -193,10 +216,11 @@ selling or leverage unless you turn them on.
 Alpaca's MCP server defaults to its paper account. Keys live in environment
 variables, never in the chat.
 
-**The Time Machine is a simulation, not a prediction.** It is built from the
-stock's own last 60 days of 5-minute bars. The future can do things those 60
-days never did: an earnings report, a halt, a headline. Treat its odds as a
-reality check, never as a promise.
+**The Time Machine is a simulation, not a prediction.** It is built from that
+symbol's own last 60 days of 5-minute bars, whether the symbol is a stock, a
+forex pair, or a commodity. The future can do things those 60 days never did:
+an earnings report, a halt, a headline. Treat its odds as a reality check,
+never as a promise.
 
 **A stop is a plan, not a guarantee.** In a fast market or across a gap, a
 stop order can fill well past its price. The max loss shown is the loss at
@@ -222,16 +246,16 @@ wash sales likely. Nothing here is tax advice.
 ## Files
 
 ```
-trader-scanner/     SKILL.md, scan.py
-trader-news/        SKILL.md, news.py
-trader-entry/       SKILL.md, entry.py
-trader-exit/        SKILL.md, exit.py
-trader-timemachine/ SKILL.md, timemachine.py
-trader-risk/        SKILL.md, check.py
-trader-budget/      SKILL.md, size.py, config.example.json, targets.example.json
-trader-broker/      SKILL.md, ticket.py, claude_desktop_config.example.json
-trader-alerts/      SKILL.md, alerts.py, alerts.example.json
-trader-analyst/     SKILL.md, facts.py, metrics.example.json
+trader-scanner/     SKILL.md, scan.py, markets.py
+trader-news/        SKILL.md, news.py, markets.py
+trader-entry/       SKILL.md, entry.py, markets.py
+trader-exit/        SKILL.md, exit.py, markets.py
+trader-timemachine/ SKILL.md, timemachine.py, markets.py
+trader-risk/        SKILL.md, check.py, markets.py
+trader-budget/      SKILL.md, size.py, markets.py, config.example.json, targets.example.json
+trader-broker/      SKILL.md, ticket.py, markets.py, claude_desktop_config.example.json
+trader-alerts/      SKILL.md, alerts.py, markets.py, alerts.example.json
+trader-analyst/     SKILL.md, facts.py, markets.py, metrics.example.json
 trader-pelosi/      SKILL.md, ptr.py
 tests/              unittest suite + offline fixtures
 ```

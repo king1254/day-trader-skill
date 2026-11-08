@@ -21,5 +21,9 @@
   "allow_margin": false,
   "allow_short": false,
   "pdt_guard": false,
+  "forex_session": "newyork",
+  "allow_leverage": false,
+  "max_leverage": 1,
+  "fx_usd_per_quote": {},
   "sec_user_agent": "Your Name you@example.com"
 }

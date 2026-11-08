@@ -152,6 +152,29 @@ for the 60 days to October 19 2026, the 10:15 AM opening-range scan, Yahoo's
 TSLA headlines that morning, the House Clerk's 2026 index, real PTR text and
 real XBRL facts. They reproduce every number in the example above.
 
+## Forex and commodities
+
+The same pipeline works on forex and commodities. One scan is one market.
+Pass `--market forex` or `--market commodity` to `/trader-scanner`. A bare
+stock ticker stays a stock: CL is Colgate, OIL is WTI crude (`CL=F`), GOLD is
+spot gold (`XAUUSD=X`). Six-letter pairs such as EURUSD and EUR/USD are forex.
+
+Forex uses the New York session, 08:00 to 17:00, on weekdays including US
+holidays. `--session london` is 03:00 to 12:00. Commodities use the US day
+session for that product and close on the same holidays as the NYSE. Spot
+metals follow the forex session.
+
+Sizing is in whole micro lots (1,000 units of the base currency), whole
+contracts, or whole ounces. Cash used is the full notional. Set
+`allow_leverage` and `max_leverage` in `trader/config.json` only if your
+broker margins the trade. A cross that is not quoted in USD needs
+`fx_usd_per_quote` (dollars per 1 unit of the quote currency) or sizing stops.
+
+Alpaca's stock tool cannot place a forex or commodity order. `/trader-broker`
+still waits for your yes, then tells you to send the ticket through an FX or
+futures broker. `/trader-analyst` and `/trader-pelosi` stay on US stocks.
+Nothing here is financial advice, and no order is placed without your yes.
+
 ## Fine print
 
 **Not financial advice.** This is software that reads public data and does

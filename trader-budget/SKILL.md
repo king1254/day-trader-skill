@@ -3,7 +3,7 @@ name: trader-budget
 description: >-
   Budget Manager. Sizes every position to your budget and your max loss per
   trade. Reads the trade plan from trader-exit (entry, stop, target), finds
-  the whole shares that fit inside four limits (max loss per trade, position
+  the whole shares, micro lots, contracts, or ounces that fit inside four limits (max loss per trade, position
   cap, max order, cash after your buffer), says which limit decided it, and
   writes ONE bracket order (entry, stop-loss, take-profit) to
   trader/orders.json in the exact shape of Alpaca's place_stock_order. A stop

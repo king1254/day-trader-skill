@@ -79,6 +79,22 @@ import time
 import urllib.error
 import urllib.request
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 YAHOO_HOSTS = ("https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com")
 NASDAQ_FILES = ("nasdaqlisted.txt", "otherlisted.txt")
@@ -271,13 +287,26 @@ def to_yahoo(sym):
     return sym.upper().replace(".", "-")
 
 
-def spark_path(symbols, rng, interval):
-    return "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (
-        ",".join(to_yahoo(s) for s in symbols), rng, interval)
+def _yahoo_token(sym):
+    y = to_yahoo(sym)
+    if "=" in y or "&" in y or "^" in y:
+        return markets.yahoo_query_symbol(y)
+    return y
 
 
-def chart_path(sym, rng, interval):
-    return "/v8/finance/chart/%s?range=%s&interval=%s" % (to_yahoo(sym), rng, interval)
+def spark_path(symbols, rng, interval, prepost=False):
+    q = "/v7/finance/spark?symbols=%s&range=%s&interval=%s" % (
+        ",".join(_yahoo_token(s) for s in symbols), rng, interval)
+    if prepost:
+        q += "&includePrePost=true"
+    return q
+
+
+def chart_path(sym, rng, interval, prepost=False):
+    q = "/v8/finance/chart/%s?range=%s&interval=%s" % (_yahoo_token(sym), rng, interval)
+    if prepost:
+        q += "&includePrePost=true"
+    return q
 
 
 # ---------------------------------------------------------------- parsing
@@ -566,7 +595,11 @@ def scan_daily(data, symbols, now_utc, min_price, min_volume):
         closes = [c for _, c in bars]
         tags, nums = find_setups(closes)
         if tags:
-            hits.append({"symbol": sym, "setups": tags, "price": round(closes[-1], 2),
+            dec = 2
+            prof = markets.classify(sym)
+            if prof["market"] != "equity":
+                dec = prof["decimals"]
+            hits.append({"symbol": sym, "setups": tags, "price": round(closes[-1], dec),
                          "close_date": d_last.isoformat(), "rsi": round(nums["rsi"], 1),
                          "volume": int(vol) if vol is not None else None})
     hits.sort(key=lambda h: (-(h["price"] * (h["volume"] or 0)), h["symbol"]))  # most dollars traded first
@@ -577,15 +610,17 @@ def scan_daily(data, symbols, now_utc, min_price, min_volume):
 
 # ---------------------------------------------------------------- opening-range breakout
 
-def slot(day, k):
-    return datetime.datetime.combine(day, OPEN) + datetime.timedelta(minutes=BAR_MIN * k)
+def slot(day, k, open_t=None):
+    return datetime.datetime.combine(day, open_t or OPEN) + datetime.timedelta(minutes=BAR_MIN * k)
 
 
-def session_bars(series, day, cutoff):
+def session_bars(series, day, cutoff, open_t=None, close_t=None):
     """5-minute bars of `day` that are complete at `cutoff` (naive New York time),
-    on the grid, with a close. Sorted, one per slot."""
+    on the grid, with a close. Sorted, one per slot.
+    open_t and close_t default to the NYSE session. Forex and commodities pass their own."""
+    open_t = open_t or OPEN
     s = session(day)
-    close_t = s[1] if s else CLOSE
+    close_limit = close_t or (s[1] if s else CLOSE)
     out = {}
     hs, ls = series.get("h"), series.get("l")
     for i, ts in enumerate(series["t"]):
@@ -595,8 +630,8 @@ def session_bars(series, day, cutoff):
         et = ts_to_eastern(ts)
         if et.date() != day or et.second or et.minute % BAR_MIN:
             continue  # another day, or the live tick off the grid
-        if et.time() < OPEN or et.time() >= close_t:
-            continue  # pre-market, after hours, the 4:00 PM closing print
+        if et.time() < open_t or et.time() >= close_limit:
+            continue  # outside this session, including the closing print
         if et + datetime.timedelta(minutes=BAR_MIN) > cutoff:
             continue  # still in progress at the cutoff
         v = series.get("v")
@@ -607,16 +642,19 @@ def session_bars(series, day, cutoff):
     return [out[k] for k in sorted(out)]
 
 
-def usable(bars, day, cutoff, n_range):
-    """Every slot from 9:30 to the cutoff is there, and at least the range."""
-    want = int((cutoff - slot(day, 0)).total_seconds() // (BAR_MIN * 60))
-    s = session(day)
-    if s:
-        want = min(want, int((datetime.datetime.combine(day, s[1]) - slot(day, 0)).total_seconds()
-                             // (BAR_MIN * 60)))
+def usable(bars, day, cutoff, n_range, open_t=None, close_t=None):
+    """Every slot from the open to the cutoff is there, and at least the range."""
+    start = slot(day, 0, open_t)
+    want = int((cutoff - start).total_seconds() // (BAR_MIN * 60))
+    if close_t is None:
+        s = session(day)
+        end_t = s[1] if s else CLOSE
+    else:
+        end_t = close_t
+    want = min(want, int((datetime.datetime.combine(day, end_t) - start).total_seconds() // (BAR_MIN * 60)))
     if want < n_range or len(bars) != want:
         return False
-    return all(b["start"] == slot(day, k) for k, b in enumerate(bars))
+    return all(b["start"] == slot(day, k, open_t) for k, b in enumerate(bars))
 
 
 def orb_candidate(bars, n_range):
@@ -626,7 +664,7 @@ def orb_candidate(bars, n_range):
     return any(b["c"] >= top for b in bars[n_range:])
 
 
-def orb_hit(bars, n_range):
+def orb_hit(bars, n_range, decimals=2):
     """Stage 2, real highs and lows: the first completed bar to CLOSE above the range high."""
     rng = bars[:n_range]
     if any(b["h"] is None or b["l"] is None for b in rng):
@@ -637,15 +675,57 @@ def orb_hit(bars, n_range):
         b = bars[k]
         if b["c"] > oh:
             closes_at = b["start"] + datetime.timedelta(minutes=BAR_MIN)
-            return {"price": round(b["c"], 2), "at": clock_label(closes_at),
+            return {"price": round(b["c"], decimals), "at": clock_label(closes_at),
                     "bar_start": b["start"].strftime("%H:%M"), "bar_index": k,
-                    "or_high": round(oh, 2), "or_low": round(ol, 2),
+                    "or_high": round(oh, decimals), "or_low": round(ol, decimals),
                     "pct_over": round((b["c"] / oh - 1) * 100, 2), "_t": closes_at}
     return None
 
 
-def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
-    """-> (day, cutoff naive ET) or raise ScanError with the plain message."""
+def _orb_window_hours(now_utc, at, or_minutes, until, explicit_day, open_t, close_t, closed_reason, label):
+    """Same clock rules as orb_window, for a forex or commodity session."""
+    now = to_eastern(now_utc)
+    day = explicit_day or now.date()
+    if or_minutes < BAR_MIN or or_minutes % BAR_MIN or or_minutes > 120:
+        raise ScanError("--or-minutes wants a multiple of 5 from 5 to 120 (15 is the classic)")
+    if closed_reason:
+        raise ScanError("No session on %s (%s): the %s market is closed. Run orb on a trading day "
+                        "after the opening range, or replay a past day with --offline."
+                        % (day_label(day), closed_reason, label))
+    range_end = datetime.datetime.combine(day, open_t) + datetime.timedelta(minutes=or_minutes)
+    first_close = range_end + datetime.timedelta(minutes=BAR_MIN)
+    close_dt = datetime.datetime.combine(day, close_t)
+    if at is not None:
+        cutoff = datetime.datetime.combine(day, at)
+        if explicit_day is None and cutoff > now + datetime.timedelta(seconds=59):
+            raise ScanError("--at %s is later than now (%s ET)." % (at.strftime("%H:%M"), clock_label(now)))
+        if cutoff > close_dt:
+            raise ScanError("--at %s is after the %s close on %s." % (at.strftime("%H:%M"), clock_label(close_dt),
+                                                                       day_label(day)))
+    else:
+        cutoff = now.replace(second=0, microsecond=0)
+        if cutoff >= close_dt:
+            raise ScanError("The %s session closed at %s ET on %s."
+                            % (label, clock_label(close_dt), day_label(day)))
+    if cutoff < first_close:
+        raise ScanError("It is %s ET: the %d-minute opening range runs %s to %s and the first bar after it "
+                        "closes at %s. Run orb again after %s."
+                        % (clock_label(cutoff), or_minutes, clock_label(datetime.datetime.combine(day, open_t)),
+                           clock_label(range_end), clock_label(first_close), clock_label(first_close)))
+    if until is not None and cutoff.time() > until:
+        raise ScanError("It is %s ET, after %s, your last time for new entries (no_entries_after): an "
+                        "opening-range breakout found now is expired."
+                        % (clock_label(cutoff), until.strftime("%H:%M")))
+    return day, cutoff
+
+
+def orb_window(now_utc, at, or_minutes, until, explicit_day=None, hours=None):
+    """-> (day, cutoff naive ET) or raise ScanError with the plain message.
+    hours, when set, is (open, close, closed_reason or None, label) for forex or commodities."""
+    if hours is not None:
+        open_t, close_t, closed_reason, label = hours
+        return _orb_window_hours(now_utc, at, or_minutes, until, explicit_day, open_t, close_t,
+                                 closed_reason, label)
     now = to_eastern(now_utc)
     day = explicit_day or now.date()
     if or_minutes < BAR_MIN or or_minutes % BAR_MIN or or_minutes > 120:
@@ -684,7 +764,7 @@ def orb_window(now_utc, at, or_minutes, until, explicit_day=None):
 
 
 def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume=0, confirm=None,
-             max_confirm=None):
+             max_confirm=None, market="equity", session_name=None):
     """stage1 = {SYM: series} with closes (spark or v8). confirm(sym) -> series with highs/lows
     (None = use the stage-1 series). With confirm and max_confirm, only the max_confirm most
     traded candidates (price x volume so far) are confirmed; the rest are counted as unconfirmed.
@@ -698,8 +778,13 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
         if not s:
             continue
         counts["fetched"] += 1
-        bars = session_bars(s, day, cutoff)
-        if not usable(bars, day, cutoff, n_range):
+        open_t = close_t = None
+        decimals = 2
+        if market != "equity":
+            prof = markets.classify(sym, session=session_name)
+            open_t, close_t, decimals = prof["open"], prof["close"], prof["decimals"]
+        bars = session_bars(s, day, cutoff, open_t, close_t)
+        if not usable(bars, day, cutoff, n_range, open_t, close_t):
             counts["unusable"] += 1
             continue
         vol = sum(b["v"] for b in bars) if s.get("v") else (s.get("meta") or {}).get("regularMarketVolume") or 0
@@ -708,13 +793,13 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
             continue
         counts["scanned"] += 1
         if orb_candidate(bars, n_range):
-            cands.append((sym, bars, bars[-1]["c"] * vol))
+            cands.append((sym, bars, bars[-1]["c"] * vol, open_t, close_t, decimals))
     counts["candidates"] = len(cands)
     if confirm is not None and max_confirm and len(cands) > max_confirm:
         cands.sort(key=lambda x: -x[2])
         counts["unconfirmed"] = len(cands) - max_confirm
         cands = cands[:max_confirm]
-    for sym, bars, _ in cands:
+    for sym, bars, _, open_t, close_t, decimals in cands:
         full = bars
         if confirm is not None:
             try:
@@ -722,12 +807,12 @@ def scan_orb(stage1, symbols, day, cutoff, or_minutes, min_price=0.0, min_volume
             except ScanError as e:
                 failed[sym] = str(e)
                 continue
-            full = session_bars(s2, day, cutoff)
-            if not usable(full, day, cutoff, n_range):
+            full = session_bars(s2, day, cutoff, open_t, close_t)
+            if not usable(full, day, cutoff, n_range, open_t, close_t):
                 failed[sym] = "the v8 chart has a missing bar"
                 continue
         counts["confirmed"] += 1
-        h = orb_hit(full, n_range)
+        h = orb_hit(full, n_range, decimals)
         if h:
             hits.append(dict({"symbol": sym, "setups": ["orb"]}, **h))
     hits.sort(key=lambda x: (x["_t"], x["symbol"]))
@@ -744,7 +829,7 @@ def progress(a, msg):
         print(msg, file=sys.stderr)
 
 
-def fetch_spark(symbols, rng, interval, pause, a=None):
+def fetch_spark(symbols, rng, interval, pause, a=None, prepost=False):
     """Batches of 20. -> ({SYM: series}, {SYM: error})."""
     data, failed = {}, {}
     batches = [symbols[i:i + SPARK_MAX] for i in range(0, len(symbols), SPARK_MAX)]
@@ -753,7 +838,7 @@ def fetch_spark(symbols, rng, interval, pause, a=None):
             SLEEP(pause)
         wanted = {to_yahoo(s): s for s in batch}
         try:
-            got = parse_spark(yahoo_get(spark_path(batch, rng, interval)), wanted)
+            got = parse_spark(yahoo_get(spark_path(batch, rng, interval, prepost)), wanted)
         except (ScanError, ValueError) as e:
             for s in batch:
                 failed[s] = str(e)
@@ -768,20 +853,79 @@ def fetch_spark(symbols, rng, interval, pause, a=None):
     return data, failed
 
 
+def resolve_market(a, symbols):
+    """equity, forex, or commodity. A mix is refused so one session clock can run the scan."""
+    explicit = getattr(a, "market", None) or "equity"
+    session_name = getattr(a, "session", None)
+    kinds = [markets.classify(s, session=session_name)["market"] for s in symbols]
+    uniq = set(kinds)
+    if explicit != "equity":
+        bad = [s for s, k in zip(symbols, kinds) if k != explicit]
+        if bad:
+            raise ScanError("%s %s not %s: scan one market at a time (--symbols or --market)"
+                            % (", ".join(bad[:8]), "is" if len(bad) == 1 else "are", explicit))
+        return explicit
+    if uniq <= {"equity"} or not uniq:
+        return "equity"
+    if "equity" in uniq:
+        raise ScanError("mix of stocks and forex/commodities: scan them separately with --market forex or --market commodity")
+    if len(uniq) > 1:
+        raise ScanError("mix of forex and commodities: scan them separately")
+    return kinds[0]
+
+
+def session_for(a, market, cfg=None):
+    name = getattr(a, "session", None)
+    if name:
+        return name
+    if market == "forex":
+        return str((cfg or {}).get("forex_session") or "newyork")
+    return None
+
+
+def market_hours(symbols, session_name, day):
+    """(open, close, closed_reason or None, label) covering every symbol in the scan."""
+    profiles = [markets.classify(s, session=session_name) for s in symbols]
+    profiles = [p for p in profiles if p["market"] != "equity"]
+    if not profiles:
+        return None
+    sample = profiles[0]
+    ok, why = markets.is_open_day(sample, day)
+    return (min(p["open"] for p in profiles), max(p["close"] for p in profiles),
+            None if ok else why, sample["market"])
+
+
+def relax_floors(a, market):
+    """The stock defaults ($5 and 1,000,000 shares) would hide every forex pair."""
+    if market == "equity":
+        return
+    if a.min_price == 5 or a.min_price == 5.0:
+        a.min_price = 0
+    if market == "forex" and a.min_volume == 1000000:
+        a.min_volume = 0
+
+
 def read_symbols(a, offline_syms=None):
+    market = getattr(a, "market", None) or "equity"
     if a.symbols:
         syms = [s for s in re.split(r"[,\s]+", a.symbols.upper()) if s]
     elif a.watchlist:
         syms = symbols_from_file(a.watchlist)
     elif offline_syms is not None and not a.universe:
         syms = sorted(offline_syms)  # offline: every chart in the file, unless a list was given
+    elif market != "equity" and not a.universe:
+        syms = [s for s, _name in markets.universe(market)]
     else:
         path = a.universe or DEFAULT_UNIVERSE
         if not os.path.exists(path):
             raise ScanError("no %s yet: run `scan.py universe` first, or pass --symbols" % path)
         syms = symbols_from_file(path)
     out = []
+    session_name = getattr(a, "session", None)
     for s in syms:
+        prof = markets.classify(s, session=session_name)
+        if prof["market"] != "equity":
+            s = prof["symbol"]
         if s not in out:
             out.append(s)
     if a.limit:
@@ -837,7 +981,35 @@ def money(x):
 
 # ---------------------------------------------------------------- commands
 
+def _write_market_universe(a, market):
+    rows = markets.universe(market)
+    out = a.out
+    if out == DEFAULT_UNIVERSE:
+        out = "trader/universe-%s.txt" % ("commodities" if str(market).startswith("commod") else market)
+    if not a.no_write:
+        d = os.path.dirname(out)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            for sym, name in rows:
+                fh.write("%s|%s\n" % (sym, name))
+    label = "forex pairs" if market == "forex" else "commodity contracts"
+    if a.json:
+        print(json.dumps({"count": len(rows), "market": market, "out": None if a.no_write else out}, indent=2))
+    else:
+        print("Kept %d %s." % (len(rows), label))
+        if not a.no_write:
+            print("Wrote %s (one SYMBOL|Name a line)." % out)
+        print("Forex default session is New York 08:00-17:00 (--session london is 03:00-12:00).")
+        print("Commodity hours are each product's US day session. Spot gold is XAUUSD=X, one ounce.")
+    print(NOTE)
+    return 0 if rows else 1
+
+
 def cmd_universe(a):
+    market = getattr(a, "market", None) or "equity"
+    if market != "equity":
+        return _write_market_universe(a, market)
     t0 = time.time()
     texts = {}
     for k, fname in enumerate(NASDAQ_FILES):
@@ -888,14 +1060,17 @@ def cmd_daily(a):
         data, failed = load_offline(a.offline)
         offline_syms = sorted(set(data) | set(failed))
     symbols = read_symbols(a, offline_syms)
+    market = resolve_market(a, symbols)
+    relax_floors(a, market)
     if not a.offline:
         progress(a, "Fetching daily closes for %s symbols (%d spark requests)..."
                  % ("{:,}".format(len(symbols)), (len(symbols) + SPARK_MAX - 1) // SPARK_MAX))
-        data, failed = fetch_spark(symbols, "3mo", "1d", a.pause, a)
+        data, failed = fetch_spark(symbols, "3mo", "1d", a.pause, a, market != "equity")
     hits, counts, last_date = scan_daily(data, symbols, now, a.min_price, a.min_volume)
     nfailed = len(symbols) - counts["fetched"]
     as_of = ("%s close" % last_date.isoformat()) if last_date else None
     doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "daily",
+           "market": market,
            "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
            "source": "yahoo", "filters": {"min_price": a.min_price, "min_volume": a.min_volume},
            "note": NOTE, "hits": hits}
@@ -924,8 +1099,13 @@ def cmd_daily(a):
     else:
         print("No setups.")
     for h in hits[:a.show]:
-        print("  %-6s %10s  RSI %5.1f  %s" % (h["symbol"], money(h["price"]), h["rsi"],
-                                              ", ".join(LABEL[t] for t in h["setups"])))
+        prof = markets.classify(h["symbol"])
+        tags = ", ".join(LABEL[t] for t in h["setups"])
+        if prof["market"] == "equity":
+            print("  %-6s %10s  RSI %5.1f  %s" % (h["symbol"], money(h["price"]), h["rsi"], tags))
+        else:
+            print("  %-10s %12s  RSI %5.1f  %s" % (h["symbol"], "$" + markets.format_price(prof, h["price"]),
+                                                   h["rsi"], tags))
     if len(hits) > a.show:
         print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
     if not a.no_write:
@@ -957,8 +1137,16 @@ def cmd_orb(a):
                 explicit_day = max(days)
                 if at is None:
                     raise ScanError("offline replay: give --at HH:MM or --now \"YYYY-MM-DD HH:MM\"")
-    day, cutoff = orb_window(now, at, a.or_minutes, until, explicit_day)
     symbols = read_symbols(a, offline_syms)
+    market = resolve_market(a, symbols)
+    session_name = session_for(a, market, cfg)
+    relax_floors(a, market)
+    day_guess = explicit_day or to_eastern(now).date()
+    hours = market_hours(symbols, session_name, day_guess) if market != "equity" else None
+    if market != "equity" and not a.until:
+        _before, after, _flat = markets.adjusted_windows(cfg, markets.classify(symbols[0], session=session_name))
+        until = parse_hhmm(after, "--until")
+    day, cutoff = orb_window(now, at, a.or_minutes, until, explicit_day, hours)
     confirm = None
     if not a.offline:
         today = to_eastern(parse_now(None)).date()
@@ -967,7 +1155,7 @@ def cmd_orb(a):
         rng = "1d" if day == today else "5d"
         progress(a, "Stage 1: 5-minute closes for %s symbols (%d spark requests)..."
                  % ("{:,}".format(len(symbols)), (len(symbols) + SPARK_MAX - 1) // SPARK_MAX))
-        data, failed = fetch_spark(symbols, rng, "%dm" % BAR_MIN, a.pause, a)
+        data, failed = fetch_spark(symbols, rng, "%dm" % BAR_MIN, a.pause, a, market != "equity")
         done = []
 
         def confirm(sym):
@@ -976,14 +1164,15 @@ def cmd_orb(a):
             done.append(sym)
             if len(done) % 50 == 0:
                 progress(a, "  stage 2: %d v8 charts so far" % len(done))
-            return parse_chart(yahoo_get(chart_path(sym, rng, "%dm" % BAR_MIN)), sym)
+            return parse_chart(yahoo_get(chart_path(sym, rng, "%dm" % BAR_MIN, market != "equity")), sym)
     hits, counts, failed2 = scan_orb(data, symbols, day, cutoff, a.or_minutes, a.min_price, a.min_volume, confirm,
-                                     a.max_confirm)
+                                     a.max_confirm, market, session_name)
     failed = dict(failed or {})
     failed.update(failed2)
     nfailed = len([s for s in symbols if s in failed])
     as_of = "%s %s ET" % (day.isoformat(), cutoff.strftime("%H:%M"))
     doc = {"created_by": "trader-scanner", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "mode": "orb",
+           "market": market,
            "as_of": as_of, "universe": len(symbols), "scanned": counts["scanned"], "failed": nfailed,
            "unconfirmed": counts["unconfirmed"], "source": "yahoo", "or_minutes": a.or_minutes,
            "interval": "%dm" % BAR_MIN,
@@ -995,8 +1184,14 @@ def cmd_orb(a):
     if a.json:
         print(json.dumps(dict(doc, counts=counts, seconds=round(time.time() - t0, 1)), indent=2))
         return 0 if hits else 1
-    print("Opening-range breakout scan, %s %s ET: %d-minute range (9:30 to %s), 5-minute bars, Yahoo."
-          % (day_label(day), clock_label(cutoff), a.or_minutes, clock_label(slot(day, a.or_minutes // BAR_MIN))))
+    if market == "equity":
+        print("Opening-range breakout scan, %s %s ET: %d-minute range (9:30 to %s), 5-minute bars, Yahoo."
+              % (day_label(day), clock_label(cutoff), a.or_minutes, clock_label(slot(day, a.or_minutes // BAR_MIN))))
+    else:
+        open_at = datetime.datetime.combine(day, hours[0])
+        print("Opening-range breakout scan, %s %s ET: %d-minute %s range (%s to %s), 5-minute bars, Yahoo."
+              % (day_label(day), clock_label(cutoff), a.or_minutes, market, clock_label(open_at),
+                 clock_label(open_at + datetime.timedelta(minutes=a.or_minutes))))
     print("Fetched %s of %s charts%s; %s usable%s; %s candidates, %s confirmed with real highs and lows."
           % ("{:,}".format(counts["fetched"]), "{:,}".format(len(symbols)),
              (" (%s failed or had no data)" % "{:,}".format(nfailed)) if nfailed else "",
@@ -1011,8 +1206,14 @@ def cmd_orb(a):
               % (len(hits), ("the %s checked" % "{:,}".format(counts["confirmed"])) if counts["unconfirmed"]
                  else "{:,}".format(counts["scanned"]), clock_label(cutoff)))
         for h in hits[:a.show]:
-            print("  %8s  %-6s %10s  range %s to %s  %+.2f%% over" % (
-                h["at"], h["symbol"], money(h["price"]), _p(h["or_low"]), _p(h["or_high"]), h["pct_over"]))
+            prof = markets.classify(h["symbol"])
+            if prof["market"] == "equity":
+                print("  %8s  %-6s %10s  range %s to %s  %+.2f%% over" % (
+                    h["at"], h["symbol"], money(h["price"]), _p(h["or_low"]), _p(h["or_high"]), h["pct_over"]))
+            else:
+                print("  %8s  %-10s %12s  range %s to %s  %+.2f%% over" % (
+                    h["at"], h["symbol"], "$" + markets.format_price(prof, h["price"]),
+                    markets.format_price(prof, h["or_low"]), markets.format_price(prof, h["or_high"]), h["pct_over"]))
         if len(hits) > a.show:
             print("  ... and %d more in the watchlist (--show N for more)." % (len(hits) - a.show))
     else:
@@ -1032,6 +1233,10 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd")
 
     p = sub.add_parser("universe", help="download Nasdaq Trader's lists -> trader/universe.txt")
+    p.add_argument("--market", choices=["equity", "forex", "commodity"], default="equity",
+                   help="equity uses Nasdaq Trader; forex and commodity write a built-in list")
+    p.add_argument("--session", choices=["newyork", "london"], default=None,
+                   help="forex day session, New York time (default newyork, 08:00-17:00)")
     p.add_argument("--out", default=DEFAULT_UNIVERSE)
     p.add_argument("--offline", metavar="DIR", help="a folder with nasdaqlisted.txt and otherlisted.txt")
     p.add_argument("--no-write", action="store_true")
@@ -1044,6 +1249,9 @@ def main(argv=None):
         g.add_argument("--watchlist", metavar="FILE", help="a watchlist.json (hits) or a text file of tickers")
         p.add_argument("--universe", help="symbol list, one SYMBOL|Name a line (default %s)" % DEFAULT_UNIVERSE)
         p.add_argument("--limit", type=int, help="scan only the first N symbols")
+        p.add_argument("--market", choices=["equity", "forex", "commodity"], default="equity")
+        p.add_argument("--session", choices=["newyork", "london"], default=None,
+                       help="forex session: newyork 08:00-17:00 or london 03:00-12:00, New York time")
         p.add_argument("--min-price", type=float, default=min_price)
         p.add_argument("--min-volume", type=int, default=min_volume)
         p.add_argument("--offline", metavar="PATH", help="fixture folder or file instead of the network")

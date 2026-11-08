@@ -41,6 +41,22 @@ import os
 import re
 import sys
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 ALPACA_FIELDS = ("symbol", "side", "qty", "notional", "type", "time_in_force", "limit_price",
                  "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
                  "order_class", "take_profit_limit_price", "stop_loss_stop_price",
@@ -192,6 +208,17 @@ def is_bracket(order):
     return oc == "bracket" or (not oc and legs)
 
 
+def _order_profile(order):
+    return markets.classify(str(order.get("symbol") or ""))
+
+
+def _px(order, v):
+    prof = _order_profile(order)
+    if prof["market"] == "equity":
+        return _p(v)
+    return markets.format_price(prof, v)
+
+
 def max_loss(order):
     """(dollars, stop) lost if the stop fills exactly at the stop, or (None, stop)."""
     stop = _f(order.get("stop_loss_stop_price")) or _f((order.get("plan") or {}).get("stop"))
@@ -199,6 +226,18 @@ def max_loss(order):
     if not stop or not q:
         return None, stop
     plan = order.get("plan") or {}
+    prof = _order_profile(order)
+    if prof["market"] != "equity":
+        if _f(plan.get("max_loss")) is not None:
+            return round(_f(plan["max_loss"]), 2), stop
+        if str(order.get("type", "market")) == "limit" and _f(order.get("limit_price")):
+            entry = _f(order["limit_price"])
+        else:
+            entry = _f(plan.get("entry"))
+        upp = markets.usd_per_point(prof, entry, None) if entry else None
+        if not entry or not upp:
+            return None, stop
+        return round(q * abs(entry - stop) * float(upp), 2), stop
     if str(order.get("type", "market")) == "limit" and _f(order.get("limit_price")):
         entry = _f(order["limit_price"])
     elif _f(plan.get("max_loss")) is not None:
@@ -218,25 +257,35 @@ def plain_parts(order):
     typ = str(order.get("type", "market"))
     tif = TIF_WORDS.get(str(order.get("time_in_force", "day")), order.get("time_in_force"))
     if is_bracket(order):
-        how = "limit %s" % _p(order["limit_price"]) if typ == "limit" and order.get("limit_price") else typ
-        parts = ["%s %s %s, %s, %s" % (side, _str_num(order.get("qty")), sym, how, tif)]
+        how = "limit %s" % _px(order, order["limit_price"]) if typ == "limit" and order.get("limit_price") else typ
+        prof = _order_profile(order)
+        qty_txt = _str_num(order.get("qty"))
+        if prof["market"] == "equity":
+            sized = qty_txt
+        else:
+            sized = "%s %s" % (qty_txt, markets.unit_word(prof, qty_txt))
+        parts = ["%s %s %s, %s, %s" % (side, sized, sym, how, tif)]
         if order.get("stop_loss_stop_price") is not None:
-            leg = "stop-loss %s" % _p(order["stop_loss_stop_price"])
+            leg = "stop-loss %s" % _px(order, order["stop_loss_stop_price"])
             if order.get("stop_loss_limit_price") is not None:
-                leg += " (limit %s)" % _p(order["stop_loss_limit_price"])
+                leg += " (limit %s)" % _px(order, order["stop_loss_limit_price"])
             parts.append(leg)
         if order.get("take_profit_limit_price") is not None:
-            parts.append("take-profit %s" % _p(order["take_profit_limit_price"]))
+            parts.append("take-profit %s" % _px(order, order["take_profit_limit_price"]))
         loss, stop = max_loss(order)
         if loss is not None:
             parts.append("max loss about %s if the stop fills at %s (it can fill worse in a fast market)"
-                         % (_money(loss), _p(stop)))
+                         % (_money(loss), _px(order, stop)))
         return parts
     if order.get("notional") is not None:
         what = "%s of %s" % (_money(order["notional"]), sym)
     else:
         q = _str_num(order.get("qty"))
-        what = "%s share%s of %s" % (q, "" if q == "1" else "s", sym)
+        prof = _order_profile(order)
+        if prof["market"] == "equity":
+            what = "%s share%s of %s" % (q, "" if q == "1" else "s", sym)
+        else:
+            what = "%s %s of %s" % (q, markets.unit_word(prof, q), sym)
     if typ == "limit":
         how = "limit order at %s" % _money(order.get("limit_price"))
     elif typ == "stop":
@@ -335,6 +384,8 @@ def status_of(order, risk, state, today):
     if rec:
         st = rec.get("status")
         if st == "approved":
+            if _order_profile(order)["market"] != "equity":
+                return False, "APPROVED by you at %s, send it with your forex or futures broker" % rec.get("at"), rv
             return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
     return True, "READY: trader-risk PASS, waiting for your yes", rv
@@ -365,6 +416,10 @@ def render(order, idx, total, cfg, risk, state, today):
     if broker == "ibkr":
         lines.append("  Claude drafts this with the Interactive Brokers connector. IBKR sends it to your")
         lines.append("  IBKR account, and it only goes to the market after you approve it there.")
+    elif _order_profile(order)["market"] != "equity":
+        kind = _order_profile(order)["market"]
+        lines.append("  This is a %s order. Alpaca's stock tool cannot place it." % kind)
+        lines.append("  Send it with your forex or futures broker, and only after you type yes.")
     else:
         lines.append("  Claude will call place_stock_order with exactly:")
         for l in json.dumps(tool_input(order), indent=2).splitlines():
@@ -374,8 +429,10 @@ def render(order, idx, total, cfg, risk, state, today):
             lines.append("  that cancel each other: when one fills, the other is canceled.")
     if ready:
         lines.append("  Reply \"yes\" to place this one order, or \"no\" to skip it.")
-        if broker != "ibkr":
+        if broker != "ibkr" and _order_profile(order)["market"] == "equity":
             lines.append("  Claude's own card then asks again: Allow once places it, Deny stops it.")
+        elif broker != "ibkr":
+            lines.append("  A yes here records your decision. Your broker still has to send the order.")
     return "\n".join(lines), ready
 
 
@@ -518,6 +575,9 @@ def cmd_approve(a):
     print("Recorded your yes for order %d: %s." % (a.index, plain(order)))
     if str(cfg.get("broker", "alpaca")).lower() == "ibkr":
         print("Now draft it with the Interactive Brokers connector; approve it in your IBKR account.")
+    elif _order_profile(order)["market"] != "equity":
+        print("Alpaca's stock tool cannot place this %s order. Send the ticket through your forex or "
+              "futures broker. It is not placed until you type yes there too." % _order_profile(order)["market"])
     else:
         print("Now call place_stock_order with exactly:")
         print(json.dumps(tool_input(order), indent=2))

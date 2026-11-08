@@ -25,6 +25,7 @@ CONTRACT_CFG = {
     "no_entries_before": "09:45", "no_entries_after": "15:30", "flat_by": "15:55",
     "fractional": False, "broker": "alpaca", "paper": True, "blocked": [],
     "allow_options": False, "allow_margin": False, "allow_short": False, "pdt_guard": False,
+    "forex_session": "newyork", "allow_leverage": False, "max_leverage": 1, "fx_usd_per_quote": {},
     "sec_user_agent": "Your Name you@example.com",
 }
 # v1's rules, for the weights mode tests

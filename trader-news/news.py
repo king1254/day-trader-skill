@@ -52,6 +52,22 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 YAHOO = "https://feeds.finance.yahoo.com/rss/2.0/headline?s=%s&region=US&lang=en-US"
 CHART = "https://%s.finance.yahoo.com/v8/finance/chart/%s?range=1d&interval=5m"
 SEC_FEED = ("https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=%s&type=%s"
@@ -192,6 +208,9 @@ class Fetcher(object):
 
 
 def yahoo_symbol(ticker):
+    prof = markets.classify(ticker)
+    if prof["market"] != "equity":
+        return markets.yahoo_query_symbol(prof["yahoo"])
     return ticker.upper().replace(".", "-")
 
 
@@ -300,7 +319,9 @@ def parse_chart(data, ticker):
     if not price or not prev:
         raise NewsError("chart for %s has no price" % ticker)
     when = meta.get("regularMarketTime")
-    return {"ticker": ticker, "price": round(float(price), 2), "prev_close": round(float(prev), 2),
+    prof = markets.classify(ticker)
+    dec = 2 if prof["market"] == "equity" else int(prof["decimals"])
+    return {"ticker": ticker, "price": round(float(price), dec), "prev_close": round(float(prev), dec),
             "pct": round((float(price) / float(prev) - 1) * 100, 2),
             "time": _dt.datetime.fromtimestamp(when, _dt.timezone.utc) if when else None}
 
@@ -392,7 +413,11 @@ def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=No
         except NewsError as exc:
             errors.append("SEC ticker list: %s" % exc)
             ciks = {}
+        skipped = []
         for t in sorted(watch):
+            if markets.classify(t)["market"] != "equity":
+                skipped.append(t)
+                continue
             cik = ciks.get(t)
             if not cik:
                 if ciks:
@@ -405,6 +430,8 @@ def collect(fetcher, watch, state, sec=True, forms=("8-K",), count=10, errors=No
                     items += parse_sec_atom(data, t)
                 except NewsError as exc:
                     errors.append("SEC %s for %s: %s" % (form, t, exc))
+        if skipped:
+            errors.append("SEC filings are for US stocks; skipped for %s" % ", ".join(skipped))
     return items
 
 

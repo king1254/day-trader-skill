@@ -2,7 +2,8 @@
 name: trader-risk
 description: >-
   Risk Manager. Checks every trade against your limits and stops anything
-  over them, before it can reach the broker. For a day trade: a stop is
+  over them, before it can reach the broker. Stocks, forex, and commodities.
+  For a day trade: a stop is
   required, the loss at the stop must fit your max loss per trade (measured
   from the higher of the plan's entry and a fresh price), reward:risk must
   meet your minimum, the day's total risk must fit your daily loss limit, no

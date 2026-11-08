@@ -50,6 +50,22 @@ import time
 import urllib.error
 import urllib.request
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK%s.json"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK%s.json"
@@ -496,6 +512,12 @@ def main(argv=None):
     wanted = args.tickers or [args.cik]
     for t in wanted:
         tick = t.upper()
+        prof = markets.classify(tick)
+        if prof["market"] != "equity" and not args.cik:
+            print("facts: %s is %s (%s). Earnings filings are for US stocks. Use /trader-news for headlines."
+                  % (tick, prof["market"], prof.get("name") or tick), file=sys.stderr)
+            failed += 1
+            continue
         if args.cik:
             cik, name = str(args.cik).zfill(10), None
         else:

@@ -67,13 +67,29 @@ import os
 import re
 import sys
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 DEFAULTS = {
     "budget": None, "cash_buffer_pct": 10, "max_position_pct": 75, "max_order_usd": 4000,
     "min_order_usd": 5, "max_loss_per_trade_usd": 50, "max_daily_loss_usd": 150, "max_trades_per_day": 3,
     "max_orders_per_day": 10, "min_reward_risk": 1.0, "require_stop": True,
     "no_entries_before": "09:45", "no_entries_after": "15:30", "flat_by": "15:55",
     "paper": True, "blocked": [], "allow_options": False, "allow_margin": False, "allow_short": False,
-    "pdt_guard": False,
+    "pdt_guard": False, "allow_leverage": False, "max_leverage": 1, "fx_usd_per_quote": {},
 }
 ALPACA_FIELDS = ("symbol", "side", "qty", "notional", "type", "time_in_force", "limit_price",
                  "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
@@ -419,6 +435,8 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
         reasons, warns, info = [], [], []
         later = []                       # entry-only reasons, turned into warnings for an exit
         sym = str(o.get("symbol", "")).strip().upper()
+        prof = markets.classify(sym) if sym else None
+        non_eq = bool(prof and prof.get("market") != "equity")
         side = str(o.get("side", "")).strip().lower()
         typ = str(o.get("type", "market")).strip().lower()
         tif = str(o.get("time_in_force", "day")).strip().lower()
@@ -462,7 +480,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if notional is not None:
                 reasons.append("format: a bracket order needs a whole-share qty, not a notional amount")
             elif _f(qty) is not None and abs(_f(qty) - round(_f(qty))) > 1e-9:
-                reasons.append("format: a bracket order takes whole shares only, got qty %r" % qty)
+                if non_eq:
+                    reasons.append("format: a bracket order takes a whole number of %s, got qty %r"
+                                   % (markets.unit_word(prof, 2), qty))
+                else:
+                    reasons.append("format: a bracket order takes whole shares only, got qty %r" % qty)
             if tif not in ("day", "gtc"):
                 reasons.append("format: a bracket order needs time_in_force day or gtc, got %r" % tif)
             if o.get("take_profit_limit_price") is None or o.get("stop_loss_stop_price") is None:
@@ -479,9 +501,12 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                                "(\"allow_options\": false)" % sym)
             else:
                 warns.append("option order: options can lose 100%% of what you pay")
-        elif sym and ("/" in sym or not TICKER.match(sym)):
+        elif sym and not non_eq and ("/" in sym or not TICKER.match(sym)):
             reasons.append("asset: %s does not look like a US stock or ETF ticker; "
                            "this pack trades stocks and ETFs only" % sym)
+        if non_eq:
+            info.append("%s is %s (%s), sized in %s. The pattern-day-trader rule does not apply."
+                        % (prof["symbol"], prof["market"], prof.get("name") or prof["symbol"], prof["unit"]))
 
         # the reference price: what one share costs to get in
         plan_entry = _f(plan.get("entry"))
@@ -495,8 +520,10 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             cands = [(p, w) for p, w in ((plan_entry, "plan"), (live, "price")) if p]
             if cands:
                 ref, ref_from = max(cands, key=lambda x: x[0])
-                ref = _cent(ref)
-                if live and ref_from == "price" and plan_entry and live > plan_entry + CENT:
+                if not non_eq:
+                    ref = _cent(ref)
+                slip = CENT if not non_eq else float(prof.get("tick") or 0)
+                if live and ref_from == "price" and plan_entry and live > plan_entry + slip:
                     info.append("%s last %s is above the plan's entry %s: the risk is measured from %s"
                                 % (sym, _p(ref), _p(plan_entry), _p(ref)))
             elif sym in prices:
@@ -509,7 +536,15 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             value = _f(notional)
         elif q:
             if ref:
-                value = q * ref
+                if non_eq:
+                    per_cash = markets.cash_per_unit(prof, ref, c)
+                    if per_cash is None:
+                        later.append("price: %s needs fx_usd_per_quote.%s in the config (dollars per 1 %s)"
+                                     % (sym, prof.get("quote") or "quote", prof.get("quote") or "quote"))
+                    else:
+                        value = q * per_cash
+                else:
+                    value = q * ref
 
         # entry or exit
         held = acct["shares"].get(sym, 0.0)
@@ -524,8 +559,11 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             exiting = q <= -held + 1e-9
         kind = "exit" if exiting else "entry"
         if kind == "entry" and value is None and q:
-            later.append("price: no price for %s to size a %s-share order; add it to "
-                         "trader/prices.json (trader-alerts: alerts.py quote %s --write)" % (sym, qty, sym))
+            if non_eq:
+                later.append("price: no price for %s to size this %s order" % (sym, prof["market"]))
+            else:
+                later.append("price: no price for %s to size a %s-share order; add it to "
+                             "trader/prices.json (trader-alerts: alerts.py quote %s --write)" % (sym, qty, sym))
 
         # blocked list and size
         if sym in blocked:
@@ -587,9 +625,44 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
                 else:
                     warns.append("no stop: the max loss is not capped, so it is not counted in the daily loss")
             elif ref:
-                if (long and stop >= ref - CENT) or (not long and stop <= ref + CENT):
+                eps = CENT if not non_eq else max(float(prof.get("tick") or 0) / 2.0, 1e-12)
+                def _px(x):
+                    if non_eq:
+                        return markets.format_price(prof, x)
+                    return _p(x)
+                if (long and stop >= ref - eps) or (not long and stop <= ref + eps):
                     later.append("stop: the stop %s must be %s the entry %s for a %s"
-                                 % (_p(stop), "below" if long else "above", _p(ref), side))
+                                 % (_px(stop), "below" if long else "above", _px(ref), side))
+                elif non_eq:
+                    upp = markets.usd_per_point(prof, ref, c.get("fx_usd_per_quote"))
+                    min_rr = _f(c.get("min_reward_risk"))
+                    if not upp:
+                        later.append("loss: no dollar value for one point of %s. Set fx_usd_per_quote.%s "
+                                     "in the config." % (sym, prof.get("quote") or "quote"))
+                    else:
+                        risk_ps = abs(ref - stop) * float(upp)
+                        per_one = markets.cash_per_unit(prof, ref, c) or ref
+                        shares = q if q is not None else ((value or 0) / per_one)
+                        max_loss = round(shares * risk_ps, 2)
+                        word = markets.unit_word(prof, shares)
+                        cap = _f(c.get("max_loss_per_trade_usd"))
+                        if cap and max_loss > cap + 0.005:
+                            later.append("loss: %s %s x %s risk a %s = %s at the stop, over your %s max loss "
+                                         "per trade" % (_num(shares), word, money(risk_ps), prof["unit"],
+                                                        money(max_loss), money(cap)))
+                        if target:
+                            if (long and target <= ref + eps) or (not long and target >= ref - eps):
+                                later.append("target: the target %s must be %s the entry %s"
+                                             % (_px(target), "above" if long else "below", _px(ref)))
+                            else:
+                                dist = abs(ref - stop)
+                                rr = round(abs(target - ref) / dist, 2) if dist else None
+                                if min_rr and rr is not None and rr < min_rr - 1e-9:
+                                    later.append("reward:risk: %.2f (target %s, entry %s, stop %s) is under your "
+                                                 "minimum %s" % (rr, _px(target), _px(ref), _px(stop), _num(min_rr)))
+                        elif min_rr:
+                            later.append("reward:risk: no target to measure it against (min_reward_risk %s)"
+                                         % _num(min_rr))
                 else:
                     risk_c = int(round(abs(ref - stop) * 100))
                     risk_ps = risk_c / 100.0
@@ -623,15 +696,27 @@ def check(orders, cfg, portfolio=None, prices=None, state=None, today=None, now=
             if cap_t and len(entries_today) + batch_entries >= cap_t:
                 later.append("trades: %d entries placed today plus %d passed earlier in this batch, your limit "
                              "is %d a day" % (len(entries_today), batch_entries, cap_t))
-            later.extend(win_reasons)
-            if c.get("pdt_guard") and pdt_n >= 3:
+            if non_eq:
+                fx_reasons, fx_warns = markets.window_reasons(now_et, c, prof)
+                later.extend(fx_reasons)
+                warns.extend(fx_warns)
+            else:
+                later.extend(win_reasons)
+            if (not non_eq) and c.get("pdt_guard") and pdt_n >= 3:
                 later.append("pdt: %d day trades in the last 5 business days (%s); a 4th trips the "
                              "pattern-day-trader rule your broker applies (\"pdt_guard\": true)"
                              % (pdt_n, ", ".join(pdt_list)))
             if stop and ref and risk_ps:
-                info.append("entry %s (%s), stop %s, target %s: risk %s a share"
-                            % (_p(ref), REF_WORDS.get(ref_from, ref_from), _p(stop),
-                               _p(target) if target else "none", _p(risk_ps)))
+                if non_eq:
+                    info.append("entry %s (%s), stop %s, target %s: risk %s a %s"
+                                % (markets.format_price(prof, ref), REF_WORDS.get(ref_from, ref_from),
+                                   markets.format_price(prof, stop),
+                                   markets.format_price(prof, target) if target else "none",
+                                   money(risk_ps), prof["unit"]))
+                else:
+                    info.append("entry %s (%s), stop %s, target %s: risk %s a share"
+                                % (_p(ref), REF_WORDS.get(ref_from, ref_from), _p(stop),
+                                   _p(target) if target else "none", _p(risk_ps)))
                 info.append("max loss %s%s, reward:risk %s%s"
                             % (money(max_loss), (" (limit %s)" % money(c["max_loss_per_trade_usd"]))
                                if _f(c.get("max_loss_per_trade_usd")) else "",

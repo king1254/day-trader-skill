@@ -1,7 +1,7 @@
 ---
 name: trader-alerts
 description: >-
-  Price Alerts. Rings when a price, a stop or the opening bell hits. Turns
+  Price Alerts. Rings when a stock, forex, or commodity price, a stop, or the opening bell hits. Turns
   the trade plan into three alerts in one go (the stop, the target and "flat
   by close" at your flat-by time), plus above / below / stop / target levels,
   percent moves from the previous close, any time of day, and the NYSE

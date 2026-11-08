@@ -58,6 +58,22 @@ import math
 import os
 import sys
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 # v2 defaults: the contract's config.example.json. Missing keys fall back to these.
 DEFAULTS = {
     "budget": None,
@@ -82,6 +98,9 @@ DEFAULTS = {
     "allow_margin": False,
     "allow_short": False,
     "pdt_guard": False,
+    "allow_leverage": False,
+    "max_leverage": 1,
+    "fx_usd_per_quote": {},
 }
 EPS = 1e-9
 FRESH_MINUTES = 15
@@ -302,6 +321,109 @@ def money(x):
 
 # ---------------------------------------------------------------- plan mode (the default)
 
+def _units_for(usd, per):
+    if per is None or per <= 0 or usd is None or usd <= 0:
+        return 0
+    return int(math.floor((float(usd) / float(per)) + 1e-9))
+
+
+def _size_market(plan, c, prof, budget, buf_pct, entry_plan, stop, target, limit, price, cash):
+    """Size a forex micro-lot, a futures contract, or a spot ounce. Same four limits as a stock."""
+    sym = prof["symbol"]
+    tick = float(prof.get("tick") or 0.00001)
+    def px(x):
+        return markets.format_price(prof, x)
+    if limit is not None:
+        ref, ref_from = float(limit), "limit"
+    elif price is not None and float(price) > float(entry_plan) + tick * 0.1:
+        ref, ref_from = float(price), "price"
+    else:
+        ref, ref_from = float(entry_plan), "plan"
+    stop, target = float(stop), float(target)
+    if stop >= ref - tick * 0.1:
+        raise SizeError("the stop %s is not below the entry %s; a long trade needs its stop underneath"
+                        % (px(stop), px(ref)))
+    if target <= ref + tick * 0.1:
+        raise SizeError("the target %s is not above the entry %s: the move has already happened. "
+                        "Skip it or make a new plan with trader-exit" % (px(target), px(ref)))
+    table = c.get("fx_usd_per_quote")
+    risk = None
+    upp = markets.usd_per_point(prof, ref, table)
+    per_cash = markets.cash_per_unit(prof, ref, c)
+    if upp is None or per_cash is None:
+        q = prof.get("quote") or "quote"
+        raise SizeError("%s is quoted in %s. Set fx_usd_per_quote.%s in trader/config.json "
+                        "(dollars per 1 %s) so the max loss is in dollars." % (sym, q, q, q))
+    risk = abs(ref - stop) * upp
+    reward = abs(target - ref) * upp
+    unit = prof["unit"]
+    cash_buffer = round(budget * buf_pct / 100.0, 2)
+    available = budget - cash_buffer
+    cash_note = "budget %s minus the %s cash buffer" % (money(budget), money(cash_buffer))
+    if cash is not None and cash - cash_buffer < available - 0.005:
+        available = cash - cash_buffer
+        cash_note = "cash %s in trader/portfolio.json minus the %s buffer" % (money(cash), money(cash_buffer))
+    available = max(round(available, 2), 0.0)
+    if c.get("allow_leverage"):
+        lev_note = " (margin at %sx)" % _num(c.get("max_leverage") or 1)
+    else:
+        lev_note = " (full notional, no leverage)"
+    limits = []
+    max_loss = _f(c.get("max_loss_per_trade_usd"))
+    if max_loss:
+        limits.append({"name": "max loss", "usd": max_loss, "per": risk, "shares": _units_for(max_loss, risk),
+                       "how": "%s max loss / %s risk a %s" % (money(max_loss), money(risk), unit)})
+    cap_pct = _f(c.get("max_position_pct"))
+    if cap_pct:
+        cap = round(budget * cap_pct / 100.0, 2)
+        limits.append({"name": "position cap", "usd": cap, "per": per_cash, "shares": _units_for(cap, per_cash),
+                       "how": "%s%% of %s = %s / %s a %s%s" % (
+                           _num(cap_pct), money(budget), money(cap), money(per_cash), unit, lev_note)})
+    max_order = _f(c.get("max_order_usd"))
+    if max_order:
+        limits.append({"name": "max order", "usd": max_order, "per": per_cash, "shares": _units_for(max_order, per_cash),
+                       "how": "%s / %s a %s%s" % (money(max_order), money(per_cash), unit, lev_note)})
+    limits.append({"name": "cash", "usd": available, "per": per_cash, "shares": _units_for(available, per_cash),
+                   "how": "%s / %s a %s%s" % (cash_note, money(per_cash), unit, lev_note)})
+    qty = max(0, min(l["shares"] for l in limits))
+    bound = [l["name"] for l in limits if l["shares"] == qty]
+    for l in limits:
+        l["binds"] = l["name"] == bound[0]
+    cost = round(qty * per_cash, 2)
+    loss = round(qty * risk, 2)
+    refusal = None
+    if qty == 0:
+        micro = markets.suggest_micro(sym)
+        hint = (" Try %s." % micro) if micro else ""
+        if not c.get("allow_leverage"):
+            hint += " Or set allow_leverage and max_leverage if your broker margins this."
+        if bound[0] == "max loss":
+            refusal = ("one %s risks %s, more than your %s max loss per trade. No order.%s"
+                       % (unit, money(risk), money(max_loss), hint))
+        else:
+            refusal = ("one %s of %s ties up %s, more than your %s limit. No order.%s"
+                       % (unit, sym, money(per_cash), bound[0], hint))
+    elif _f(c.get("min_reward_risk")) and reward < float(c["min_reward_risk"]) * risk - EPS:
+        refusal = ("reward:risk %.2f (target %s, entry %s, stop %s) is under your minimum %s, so trader-risk "
+                   "would block it. No order."
+                   % (reward / risk, px(target), px(ref), px(stop), _num(c["min_reward_risk"])))
+    elif cost < float(c.get("min_order_usd") or 0) - 0.005:
+        refusal = ("%d %s of %s ties up %s, under your %s minimum order. No order."
+                   % (qty, markets.unit_word(prof, qty), sym, money(cost), money(c["min_order_usd"])))
+    return {
+        "symbol": sym, "side": "buy", "setup": plan.get("setup", ""), "date": plan.get("date"),
+        "entry_time": plan.get("entry_time", ""), "entry_plan": float(entry_plan),
+        "entry": ref, "entry_from": ref_from, "stop": stop, "target": target,
+        "risk_per_share": round(risk, 4), "reward_risk": round(reward / float(risk), 2),
+        "stop_label": plan.get("stop_label", ""), "target_label": plan.get("target_label", ""),
+        "budget": budget, "cash_buffer_pct": buf_pct, "cash_buffer": cash_buffer, "cash_available": available,
+        "max_loss_per_trade_usd": max_loss, "limits": limits, "qty": qty, "bound_by": bound[0],
+        "cost": cost, "max_loss": loss, "flat_by": plan.get("flat_by") or c.get("flat_by"),
+        "order_type": "limit" if limit is not None else "market", "refusal": refusal,
+        "market": prof["market"], "unit": unit, "decimals": prof["decimals"],
+    }
+
+
 def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=None):
     """Pure function: one plan + your rules -> the sizing (a dict). qty may be 0.
 
@@ -337,6 +459,13 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     buf_pct = float(c.get("cash_buffer_pct") or 0)
     if not 0 <= buf_pct < 100:
         raise SizeError("cash_buffer_pct must be between 0 and 100")
+
+    prof = markets.classify(sym)
+    if prof["market"] != "equity":
+        names = {sym, prof["symbol"], prof.get("yahoo") or "", prof["symbol"].replace("=X", "").replace("=F", "")}
+        if names & blocked:
+            raise SizeError("%s is on your blocked list" % prof["symbol"])
+        return _size_market(plan, c, prof, budget, buf_pct, entry_plan, stop, target, limit, price, cash)
 
     if limit is not None:
         ref, ref_from = round_cent(limit), "limit"
@@ -415,8 +544,33 @@ def size_trade(plan, cfg, budget=None, limit=None, price=None, cash=None, today=
     }
 
 
+def _bracket_market(s):
+    if s["refusal"] or s["qty"] <= 0:
+        return None
+    prof = markets.classify(s["symbol"])
+    def px(x):
+        return markets.format_price(prof, x)
+    word = markets.unit_word(prof, s["qty"])
+    o = {"symbol": s["symbol"], "side": "buy", "qty": str(int(s["qty"])), "type": s["order_type"],
+         "time_in_force": "day", "order_class": "bracket", "asset_class": s["market"],
+         "take_profit_limit_price": px(s["target"]), "stop_loss_stop_price": px(s["stop"])}
+    if s["order_type"] == "limit":
+        o["limit_price"] = px(s["entry"])
+    setup = SETUP_WORDS.get(s["setup"], s["setup"] or "day trade")
+    o["why"] = ("%s on %s: %d %s, bound by your %s (%d x %s = %s at the stop)"
+                % (setup, s["symbol"], s["qty"], word, s["bound_by"], s["qty"],
+                   money(s["risk_per_share"]), money(s["max_loss"])))
+    o["plan"] = {"entry": s["entry"], "stop": s["stop"], "target": s["target"],
+                 "risk_per_share": s["risk_per_share"], "max_loss": s["max_loss"], "setup": s["setup"],
+                 "entry_time": s["entry_time"], "flat_by": s["flat_by"],
+                 "market": s["market"], "unit": s["unit"]}
+    return o
+
+
 def bracket_order(s):
     """The one proposed order, Alpaca place_stock_order fields (strings) plus why and plan."""
+    if s.get("market") not in (None, "", "equity"):
+        return _bracket_market(s)
     if s["refusal"] or s["qty"] <= 0:
         return None
     o = {"symbol": s["symbol"], "side": "buy", "qty": str(int(s["qty"])), "type": s["order_type"],
@@ -441,7 +595,48 @@ def bracket_order(s):
     return o
 
 
+def _report_market(s, order, notes=()):
+    prof = markets.classify(s["symbol"])
+    def px(x):
+        return markets.format_price(prof, x)
+    word = markets.unit_word(prof, s["qty"])
+    lines = ["%s buy (%s), entry %s%s" % (
+        s["symbol"], prof["name"], px(s["entry_plan"]), (" at " + s["entry_time"]) if s["entry_time"] else "")]
+    lines.append("Stop %s. Target %s. One %s risks %s. Reward:risk %.2f." % (
+        px(s["stop"]), px(s["target"]), s["unit"], money(s["risk_per_share"]), s["reward_risk"]))
+    for n in notes:
+        lines.append(n)
+    lines.append("Cash used is the full notional unless allow_leverage is true.")
+    lines.append("")
+    lines.append("Limits (whole %s; the smallest one wins):" % markets.unit_word(prof, 2))
+    for l in s["limits"]:
+        lines.append("  %-13s %-58s %4d %s%s" % (
+            l["name"], l["how"][:58], l["shares"], s["unit"], "  <- binds" if l["binds"] else ""))
+    lines.append("")
+    if order is None:
+        lines.append("No order: " + s["refusal"])
+        lines.append("Education and tooling, not financial advice.")
+        return "\n".join(lines)
+    lines.append("Size: %d %s of %s, cash used %s. Max loss at the stop: %s."
+                 % (s["qty"], word, s["symbol"], money(s["cost"]), money(s["max_loss"])))
+    lines.append("A stop is an order, not a promise: in a fast market it can fill past %s." % px(s["stop"]))
+    lines.append("")
+    lines.append("Proposed bracket (nothing has been placed; Alpaca's stock tool cannot send this):")
+    how = "limit %s" % order["limit_price"] if order["type"] == "limit" else "market"
+    lines.append("  buy %s %s %s, %s, day, take-profit %s, stop-loss %s" % (
+        order["qty"], word, order["symbol"], how, order["take_profit_limit_price"], order["stop_loss_stop_price"]))
+    if s.get("flat_by"):
+        lines.append("Flat by %s New York." % s["flat_by"])
+    lines.append("")
+    lines.append("Next: trader-risk checks it, then trader-broker asks you yes or no. Send it through your")
+    lines.append("forex or futures broker. Nothing here can place it on its own.")
+    lines.append("Education and tooling, not financial advice.")
+    return "\n".join(lines)
+
+
 def plan_report(s, order, notes=()):
+    if s.get("market") not in (None, "", "equity"):
+        return _report_market(s, order, notes)
     lines = []
     setup = SETUP_WORDS.get(s["setup"], s["setup"] or "setup")
     lines.append("%s buy, %s, entry %s%s" % (s["symbol"], setup, _price(s["entry_plan"]),

@@ -57,6 +57,22 @@ import time
 import urllib.error
 import urllib.request
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 PAUSE = 0.5    # seconds between requests: be polite to free endpoints
 BACKOFF = 2.0  # seconds to wait before the one retry after a 429
@@ -194,11 +210,25 @@ def market_status(now_utc):
 # ---------------------------------------------------------------- quotes
 
 def stooq_url(sym):
-    return "https://stooq.com/q/l/?s=%s.us&f=sd2t2ohlcv&h&e=csv" % sym.lower().replace(".", "-")
+    prof = markets.classify(sym)
+    if prof["market"] == "equity":
+        return "https://stooq.com/q/l/?s=%s.us&f=sd2t2ohlcv&h&e=csv" % sym.lower().replace(".", "-")
+    y = prof["yahoo"].lower()
+    if y.endswith("=x"):
+        token = y[:-2]
+    elif y.endswith("=f"):
+        token = y[:-2] + ".f"
+    else:
+        token = y
+    return "https://stooq.com/q/l/?s=%s&f=sd2t2ohlcv&h&e=csv" % token
 
 
 def yahoo_url(sym, host=YAHOO_HOSTS[0]):
-    return "https://%s/v8/finance/chart/%s?range=1d&interval=1d" % (host, sym.upper().replace(".", "-"))
+    prof = markets.classify(sym)
+    if prof["market"] == "equity":
+        return "https://%s/v8/finance/chart/%s?range=1d&interval=1d" % (host, sym.upper().replace(".", "-"))
+    return "https://%s/v8/finance/chart/%s?range=1d&interval=1d&includePrePost=true" % (
+        host, markets.yahoo_query_symbol(prof["yahoo"]))
 
 
 def parse_stooq(text, sym):
@@ -471,8 +501,10 @@ def evaluate(rules, quotes, status, state, now_utc):
             if hit and rid not in rung:
                 word = "at or above" if typ == "above" else "at or below"
                 label = {"stop": "stop", "target": "target"}.get(r["type"], "alert level")
-                rings.append({"id": rid, "symbol": sym, "message": "%s %s $%.2f: %s your %s $%s%s."
-                              % (sym, "is" if status["open"] else "last", p, word, label, _n(r["price"]),
+                prof = markets.classify(sym)
+                shown = ("$%.2f" % p) if prof["market"] == "equity" else ("$" + markets.format_price(prof, p))
+                rings.append({"id": rid, "symbol": sym, "message": "%s %s %s: %s your %s $%s%s."
+                              % (sym, "is" if status["open"] else "last", shown, word, label, _n(r["price"]),
                                  (" (" + r["note"] + ")") if r.get("note") else "")})
                 rung[rid] = stamp
             elif not hit and rid in rung and r.get("rearm"):
@@ -485,8 +517,13 @@ def evaluate(rules, quotes, status, state, now_utc):
             want = r.get("direction")
             hit = abs(move) >= r["pct"] and (not want or (want == "up") == (move > 0))
             if hit and not _rang_today(rung.get(rid), today):
-                rings.append({"id": rid, "symbol": sym, "message": "%s moved %+.2f%% to $%.2f (from $%.2f)."
-                              % (sym, move, p, float(ref))})
+                prof = markets.classify(sym)
+                if prof["market"] == "equity":
+                    msg = "%s moved %+.2f%% to $%.2f (from $%.2f)." % (sym, move, p, float(ref))
+                else:
+                    msg = "%s moved %+.2f%% to $%s (from $%s)." % (
+                        sym, move, markets.format_price(prof, p), markets.format_price(prof, ref))
+                rings.append({"id": rid, "symbol": sym, "message": msg})
                 rung[rid] = stamp
     state["last_check"] = stamp
     return rings, state
@@ -574,9 +611,17 @@ def cmd_quote(a):
             q = quotes.get(s)
             if q:
                 chg = ""
-                if q.get("prev_close"):
-                    chg = " (%+.2f%% vs prev close $%.2f)" % (100.0 * (q["price"] / q["prev_close"] - 1), q["prev_close"])
-                print("%-6s $%.2f%s  %s  [%s]" % (s, q["price"], chg, q.get("time", ""), q["source"]))
+                prof = markets.classify(s)
+                if prof["market"] == "equity":
+                    if q.get("prev_close"):
+                        chg = " (%+.2f%% vs prev close $%.2f)" % (100.0 * (q["price"] / q["prev_close"] - 1), q["prev_close"])
+                    print("%-6s $%.2f%s  %s  [%s]" % (s, q["price"], chg, q.get("time", ""), q["source"]))
+                else:
+                    px = markets.format_price(prof, q["price"])
+                    if q.get("prev_close"):
+                        chg = " (%+.2f%% vs prev close $%s)" % (
+                            100.0 * (q["price"] / q["prev_close"] - 1), markets.format_price(prof, q["prev_close"]))
+                    print("%-12s $%s%s  %s  [%s]" % (s, px, chg, q.get("time", ""), q["source"]))
         for e in errors:
             print("error: " + e)
         if a.write and quotes:

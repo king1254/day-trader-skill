@@ -7,12 +7,15 @@ description: >-
   runs a pre-market scan of daily closes (20-day closing-high breakout, bull
   flag, reclaimed the 20-day average, oversold, oversold bounce) and an
   intraday opening-range breakout scan on 5-minute bars, then writes
-  trader/watchlist.json for trader-news and trader-entry. Free Yahoo data,
+  trader/watchlist.json for trader-news and trader-entry. Also scans forex
+  pairs and commodity futures or spot metals when you pass --market forex or
+  --market commodity (one market per scan). Free Yahoo data,
   bar by bar. Use when the user says "scan the market", "find me setups",
+  "scan forex", "gold setup", "oil opening range", "commodity scan",
   "what is breaking out", "opening range breakouts", "scan for bull flags",
   "oversold stocks", "pre-market scan", "build my watchlist", "what should I
   look at today", or at the start of a trading day before /trader-news.
-argument-hint: "[universe | daily | orb] [--at HH:MM]"
+argument-hint: "[universe | daily | orb] [--at HH:MM] [--market equity|forex|commodity] [--session newyork|london]"
 ---
 
 # trader-scanner

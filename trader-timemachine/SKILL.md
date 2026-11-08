@@ -4,7 +4,7 @@ description: >-
   Time Machine. Replays every possible outcome of a trade before you risk a
   dollar: 10,000 simulated sessions plus every past time the setup fired.
   Takes the plan from trader-exit (entry, stop, target), rebuilds the rest of
-  the day 10,000 times from the stock's own 5-minute bars over the last 60
+  the day 10,000 times from that symbol's own 5-minute bars (stocks, forex, or commodities) over the last 60
   days, and re-runs the same rule on every past session. Prints the odds of
   target first, stop first, or neither by the close, where the price sits at
   the close, the average R, the history, and one honest verdict, then hands

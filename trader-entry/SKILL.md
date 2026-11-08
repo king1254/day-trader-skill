@@ -8,11 +8,13 @@ description: >-
   20-day high from the scanner), with an optional volume check. Says waiting
   and how far, triggered with the time and the price, expired, or not open
   yet, and writes trader/entry.json for /trader-exit. Long side only. It never
-  places an order. Use when the user says "tell me when to get in", "watch
-  TSLA", "has it broken out", "did it break the opening range", "entry
+  places an order. Works on forex and commodities too: the session is the
+  New York forex day (or London with --session london) or the commodity's US
+  day session. Use when the user says "tell me when to get in", "watch
+  TSLA", "watch EURUSD", "has it broken out", "did it break the opening range", "entry
   signal", "time my entry", "check my watchlist", or after /trader-scanner
   and /trader-news, before /trader-exit.
-argument-hint: "[TICKER] [--setup orb|level] [--interval 5m|1m]"
+argument-hint: "[TICKER] [--setup orb|level] [--interval 5m|1m] [--session newyork|london]"
 ---
 
 # trader-entry

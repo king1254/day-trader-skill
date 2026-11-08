@@ -4,7 +4,8 @@ description: >-
   Order Executor. Sends approved orders to your broker, paper trading by
   default, never without your yes. Shows each order as a plain ticket (a
   bracket shows its stop-loss, take-profit and the max loss at the stop)
-  plus the exact JSON for Alpaca's place_stock_order, records your yes word
+  plus the exact JSON for Alpaca's place_stock_order (forex and commodity
+  tickets say Alpaca cannot place them), records your yes word
   for word, then Claude's own Allow once / Deny card asks again. Builds the
   sell ticket that closes a day trade by your flat-by time, records fills,
   and logs each trade's max loss so trader-risk can hold the daily limit.

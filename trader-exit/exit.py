@@ -50,6 +50,22 @@ import urllib.error
 import urllib.request
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
 
+
+def _load_markets():
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "markets.py")
+    mod_name = "markets_" + os.path.basename(os.path.dirname(os.path.abspath(__file__))).replace("-", "_")
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+markets = _load_markets()
+
 UA = "Mozilla/5.0 (compatible; day-trader-skill/2.0; +https://github.com/Jakeschincariol/day-trader-skill)"
 BACKOFF = 5.0
 HOSTS = ("query2", "query1")
@@ -202,14 +218,14 @@ def D(x, what="a number"):
         raise PlanError("%s is not a number: %r" % (what, x))
 
 
-def cents(x):
-    """Round half up to the cent."""
-    return D(x).quantize(CENT, rounding=ROUND_HALF_UP)
+def cents(x, quantum=None):
+    """Round half up to the cent, or to quantum for a forex or commodity price."""
+    return D(x).quantize(quantum or CENT, rounding=ROUND_HALF_UP)
 
 
-def floor_cents(x):
+def floor_cents(x, quantum=None):
     """A long's stop: round down, away from the entry."""
-    return D(x).quantize(CENT, rounding=ROUND_FLOOR)
+    return D(x).quantize(quantum or CENT, rounding=ROUND_FLOOR)
 
 
 def money(x):
@@ -268,16 +284,24 @@ def r_label(r):
 
 
 def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=None, or_low=None,
-            atr=None, atr_bars=None):
-    """The stop, the target and the risk, in exact cents. Raises PlanError with the reason."""
-    e = cents(entry)
+            atr=None, atr_bars=None, quantum=None):
+    """The stop, the target and the risk, in exact cents. Raises PlanError with the reason.
+    quantum overrides the cent for forex and commodity prices."""
+    quantum = quantum or CENT
+
+    def money(x, _q=quantum):
+        if _q == CENT:
+            return "$%s" % format(D(x).quantize(CENT), ",f")
+        return "$" + format(D(x).quantize(_q), "f")
+
+    e = cents(entry, quantum)
     if e <= 0:
         raise PlanError("the entry price must be above $0")
     detail = ""
     if stop_rule in ("or_mid", "or_low"):
         if or_high is None or or_low is None:
             raise PlanError("an %s stop needs the opening range (--or-high and --or-low)" % stop_rule.replace("_", "-"))
-        oh, ol = cents(or_high), cents(or_low)
+        oh, ol = cents(or_high, quantum), cents(or_low, quantum)
         if oh <= ol:
             raise PlanError("the opening-range high %s must be above its low %s" % (money(oh), money(ol)))
         if stop_rule == "or_mid":
@@ -302,7 +326,7 @@ def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=Non
             num(a.quantize(Decimal("0.0001"))), atr_bars, " (fewer than 14 so far)" if atr_bars < ATR_BARS else "")
     else:
         raise PlanError("unknown stop rule %r" % stop_rule)
-    stop = floor_cents(raw)
+    stop = floor_cents(raw, quantum)
     if stop != D(raw):
         detail = (detail + ", rounded down" if detail else "$%s rounded down" % num(raw))
     if stop >= e:
@@ -317,10 +341,10 @@ def compute(entry, stop_rule, stop_param, target_rule, target_param, or_high=Non
                         "survive the spread, normal wiggle would stop you out. Widen it."
                         % (money(risk), money(floor_risk.quantize(CENT, rounding=ROUND_HALF_UP)), money(e)))
     if target_rule == "r":
-        target = cents(e + target_param * risk)
+        target = cents(e + target_param * risk, quantum)
         t_label = r_label(target_param)
     else:
-        target = cents(target_param)
+        target = cents(target_param, quantum)
         t_label = None
     if target <= e:
         raise PlanError("the target %s is at or below the entry %s: a long's target goes above it"
@@ -391,7 +415,11 @@ def read_text(path):
 
 
 def load_chart(sym, interval, day, offline=None):
+    prof = markets.classify(sym)
+    if prof["market"] != "equity":
+        sym = prof["symbol"]
     ysym = sym.upper().replace(".", "-")
+    yurl = markets.yahoo_query_symbol(ysym) if ("=" in ysym or "&" in ysym) else ysym
     if offline:
         path = offline
         if os.path.isdir(offline):
@@ -409,7 +437,8 @@ def load_chart(sym, interval, day, offline=None):
         rng = "1d" if back <= 0 else "5d" if back <= 6 else "1mo" if back <= 28 else "60d"
         if interval == "1m" and back > 6:
             raise PlanError("Yahoo keeps 1-minute bars for about a week")
-        text = yahoo_get("/v8/finance/chart/%s?range=%s&interval=%s" % (ysym, rng, interval))
+        extra = "&includePrePost=true" if prof["market"] != "equity" else ""
+        text = yahoo_get("/v8/finance/chart/%s?range=%s&interval=%s%s" % (yurl, rng, interval, extra))
     try:
         data = json.loads(text)
         res = data["chart"]["result"]
@@ -439,10 +468,14 @@ def load_chart(sym, interval, day, offline=None):
     return {"bars": bars, "data_time": meta.get("regularMarketTime")}
 
 
-def session_bars(chart, day, interval, upto_slot=None, now_utc=None):
+def session_bars(chart, day, interval, upto_slot=None, now_utc=None, symbol=None):
     """Closed, on-grid bars of one New York session, oldest first (the live tick is dropped)."""
     step = INTERVALS[interval]
-    s = session(day)
+    prof = markets.classify(symbol) if symbol else None
+    if prof and prof["market"] != "equity":
+        s, _why = markets.session_bounds(prof, day)
+    else:
+        s = session(day)
     if not s:
         return []
     open_dt = datetime.datetime.combine(day, s[0])
@@ -502,8 +535,22 @@ def read_config(path):
     return cfg
 
 
-def resolve_flat_by(day, explicit, cfg, entry_time):
-    """(HH:MM, note). The config's flat-by moves up with a 1:00 p.m. early close."""
+def resolve_flat_by(day, explicit, cfg, entry_time, symbol=None):
+    """(HH:MM, note). The config's flat-by moves up with a 1:00 p.m. early close.
+    Forex and commodities use their own session close instead of the NYSE close."""
+    prof = markets.classify(symbol) if symbol else None
+    if prof and prof["market"] != "equity":
+        _before, _after, flat = markets.adjusted_windows(cfg, prof)
+        t = parse_hhmm(explicit or flat, "--flat-by" if explicit else "flat_by")
+        close_t = prof["close"]
+        if t >= close_t:
+            if explicit:
+                raise PlanError("--flat-by %s is at or after the %s close" % (hm(t), hm(close_t)))
+            t = datetime.time(close_t.hour, max(close_t.minute - 5, 0))
+        if entry_time and entry_time >= t:
+            raise PlanError("the entry at %s is at or after your flat-by %s: there is no time left to hold it"
+                            % (ampm(entry_time), hm(t)))
+        return hm(t), ""
     t = parse_hhmm(explicit or cfg.get("flat_by") or DEFAULTS["flat_by"], "--flat-by" if explicit else "flat_by")
     note = ""
     s = session(day) if day else None
@@ -565,6 +612,10 @@ def gather(a):
 def build_plan(a, now_utc):
     info = gather(a)
     cfg = read_config(a.config)
+    prof = markets.classify(info["symbol"], session=getattr(a, "session", None))
+    if prof["market"] != "equity":
+        info["symbol"] = prof["symbol"]
+    quantum = None if prof["market"] == "equity" else Decimal("1e-%d" % int(prof["decimals"]))
     stop_text = a.stop
     if not stop_text:
         if info["setup"] != "orb":
@@ -585,17 +636,18 @@ def build_plan(a, now_utc):
     atr = atr_n = None
     if stop_rule == "atr":
         chart = load_chart(info["symbol"], info["interval"], day, a.offline)
-        bars = session_bars(chart, day, info["interval"], info["entry_bar"], parse_now(a.now) if a.now else None)
+        bars = session_bars(chart, day, info["interval"], info["entry_bar"], parse_now(a.now) if a.now else None,
+                            info["symbol"])
         if len(bars) < 3:
             raise PlanError("an atr stop needs at least 3 closed %s bars of %s on %s by the entry; found %d"
                             % (info["interval"], info["symbol"], day, len(bars)))
         atr, atr_n = atr_of(bars)
     c = compute(info["entry"], stop_rule, stop_param, target_rule, target_param, info["or_high"], info["or_low"],
-                atr, atr_n)
-    flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time)
+                atr, atr_n, quantum)
+    flat_by, flat_note = resolve_flat_by(day, a.flat_by, cfg, entry_time, info["symbol"])
     orr = None
     if info["or_high"] is not None and info["or_low"] is not None:
-        orr = {"high": float(cents(info["or_high"])), "low": float(cents(info["or_low"])),
+        orr = {"high": float(cents(info["or_high"], quantum)), "low": float(cents(info["or_low"], quantum)),
                "minutes": int(info["or_minutes"] or 15)}
     plan = {"created_by": "trader-exit", "symbol": info["symbol"], "side": "buy", "date": day.isoformat(),
             "setup": info["setup"], "entry": float(c["entry"]),
@@ -605,6 +657,9 @@ def build_plan(a, now_utc):
             "target": float(c["target"]), "target_r": float(c["target_r"]), "target_label": c["target_label"],
             "risk_per_share": float(c["risk"]), "reward_risk": float(c["reward_risk"]), "flat_by": flat_by,
             "stop_detail": c["stop_detail"], "created_at": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), "note": NOTE}
+    if prof["market"] != "equity":
+        plan["market"] = prof["market"]
+        plan["unit"] = prof["unit"]
     if atr is not None:
         plan["atr"] = round(atr, 4)
         plan["atr_bars"] = atr_n
@@ -627,6 +682,12 @@ def build_plan(a, now_utc):
 def describe(plan):
     day = datetime.date.fromisoformat(plan["date"])
     setup = {"orb": "opening-range breakout", "level": "close above a level"}.get(plan["setup"], plan["setup"])
+    prof = markets.classify(plan.get("symbol") or "")
+    def px(x):
+        if prof["market"] == "equity":
+            return money(x)
+        return "$" + markets.format_price(prof, x)
+    unit = "share" if prof["market"] == "equity" else prof["unit"]
     e = D(plan["entry"])
     risk = D(plan["risk_per_share"])
     pct = (risk / e * 100).quantize(CENT, rounding=ROUND_HALF_UP)
@@ -637,11 +698,11 @@ def describe(plan):
             when += " (bar %d)" % plan["entry_bar"]
     out = ["Exit plan: %s long, %s, %s on %s bars" % (
         plan["symbol"], day.strftime("%a %Y-%m-%d"), setup, "5-minute" if plan["interval"] == "5m" else "1-minute")]
-    out.append("  Entry         %s%s" % (money(plan["entry"]), when))
-    out.append("  Stop          %s  %s%s" % (money(plan["stop"]), plan["stop_label"],
+    out.append("  Entry         %s%s" % (px(plan["entry"]), when))
+    out.append("  Stop          %s  %s%s" % (px(plan["stop"]), plan["stop_label"],
                                              (": " + plan["stop_detail"]) if plan.get("stop_detail") else ""))
-    out.append("  Target        %s  %s" % (money(plan["target"]), plan["target_label"]))
-    out.append("  Risk a share  %s (%s%% of the entry)" % (money(plan["risk_per_share"]), pct))
+    out.append("  Target        %s  %s" % (px(plan["target"]), plan["target_label"]))
+    out.append("  Risk a %s  %s (%s%% of the entry)" % (unit, px(plan["risk_per_share"]), pct))
     out.append("  Reward:risk   %s" % ratio(plan["reward_risk"]))
     out.append("  Flat by       %s ET, win or lose: no overnight hold" % plan["flat_by"])
     out.append("Set before the entry. If price hits the stop, you are out; never move it further away.")

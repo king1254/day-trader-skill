@@ -2,18 +2,14 @@
 name: trader-entry
 description: >-
   Entry Timer. Watches a setup bar by bar and tells you the moment to get in.
-  Reads free Yahoo 1-minute or 5-minute bars, builds the opening range (the
-  first 15 minutes by default) and calls the entry on the first completed bar
-  that CLOSES above the range high, or above a level you give it (like a
-  20-day high from the scanner), with an optional volume check. Says waiting
-  and how far, triggered with the time and the price, expired, or not open
-  yet, and writes trader/entry.json for /trader-exit. Long side only. It never
-  places an order. Works on forex and commodities too: the session is the
-  New York forex day (or London with --session london) or the commodity's US
-  day session. Use when the user says "tell me when to get in", "watch
-  TSLA", "watch EURUSD", "has it broken out", "did it break the opening range", "entry
-  signal", "time my entry", "check my watchlist", or after /trader-scanner
-  and /trader-news, before /trader-exit.
+  Builds the opening range from free Yahoo 1-minute or 5-minute bars and
+  calls the entry on the first completed bar that closes above the range
+  high, or above a level you give it. Works on stocks, forex (New York or
+  London session) and commodities. Says waiting, triggered, expired, or not
+  open yet, and writes trader/entry.json for /trader-exit. Long side only;
+  it never places an order. Use when the user says "tell me when to get in",
+  "watch TSLA", "watch EURUSD", "has it broken out", "time my entry", or
+  before /trader-exit.
 argument-hint: "[TICKER] [--setup orb|level] [--interval 5m|1m] [--session newyork|london]"
 ---
 

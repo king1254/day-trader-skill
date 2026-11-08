@@ -1,21 +1,16 @@
 ---
 name: trader-risk
 description: >-
-  Risk Manager. Checks every trade against your limits and stops anything
-  over them, before it can reach the broker. Stocks, forex, and commodities.
-  For a day trade: a stop is
-  required, the loss at the stop must fit your max loss per trade (measured
-  from the higher of the plan's entry and a fresh price), reward:risk must
-  meet your minimum, the day's total risk must fit your daily loss limit, no
-  more than your trades per day, and no new entries outside your entry
-  window or when the market is closed. It also keeps the basics: blocked
-  tickers, order size, position cap, cash buffer, margin, short sales,
-  options and crypto, malformed or bad bracket orders, duplicates and a daily
-  order limit. Getting out is never blocked by a day limit. Prints PASS or
-  BLOCK with the reason and records the verdicts so trader-broker only shows
-  an order that passed. Use when the user says "check my order", "is this
-  safe", "risk check", "does this break my rules", "can I take this trade",
-  "how much have I risked today", or before /trader-broker, always.
+  Risk Manager. Checks every stock, forex, or commodity trade against your
+  limits and blocks anything over them before the broker. A day trade needs a
+  stop, a loss inside your max loss per trade, your minimum reward:risk, room
+  in the daily loss limit and the trades-per-day cap, and an open entry
+  window. It also checks blocked tickers, order size, position cap, cash
+  buffer, margin, short sales, options, crypto, bad brackets, duplicates and
+  the daily order limit. Exits are not blocked by a day limit. Prints PASS or
+  BLOCK with the reason so trader-broker only shows an order that passed.
+  Use when the user says "check my order", "is this safe", "risk check",
+  "can I take this trade", or before /trader-broker.
 argument-hint: "[path to orders.json]"
 ---
 
